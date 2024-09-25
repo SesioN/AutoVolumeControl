@@ -1,123 +1,170 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using CSCore.CoreAudioAPI;
 
 namespace AutoVolumeControl
 {
-    class Apps
+    class Apps : IDisposable
     {
-        private List<string> apps;
+        private readonly List<string> apps;
         private MMDevice defaultPlaybackDevice;
 
         public Apps()
         {
-            this.apps = new List<string>();
+            apps = new List<string>();
             InitializeDefaultDevice();
         }
 
         public List<string> GetApps()
         {
             Refresh();
-            return this.apps;
+            return new List<string>(apps);
         }
 
         public void Refresh()
         {
-            this.apps.Clear();
+            apps.Clear();
 
-            if (this.defaultPlaybackDevice != null)
+            if (defaultPlaybackDevice == null)
+                return;
+
+            var sessionApps = new List<string>();
+
+            var task = Task.Run(() =>
             {
-                var sessionApps = new List<string>();
-
-                var task = Task.Factory.StartNew(() =>
+                try
                 {
-                    try
-                    {
-                        using (var sessionManager = AudioSessionManager2.FromMMDevice(defaultPlaybackDevice))
-                        {
-                            var sessionEnumerator = sessionManager.GetSessionEnumerator();
+                    InitializeCom();
+                    var sessions = GetActiveSessions();
+                    sessionApps.AddRange(sessions);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error in Refresh Task: {ex.Message}\n{ex.StackTrace}");
+                    throw;
+                }
+                finally
+                {
+                    ComHelper.CoUninitialize();
+                }
+            });
 
-                            foreach (var session in sessionEnumerator)
-                            {
-                                using (var audioSessionControl = session.QueryInterface<AudioSessionControl2>())
-                                {
-                                    // Skip system sound sessions
-                                    if (audioSessionControl.IsSystemSoundSession)
-                                    {
-                                        continue;
-                                    }
-
-                                    string name = GetSessionDisplayName(audioSessionControl);
-
-                                    if (!string.IsNullOrEmpty(name) && !sessionApps.Contains(name))
-                                    {
-                                        sessionApps.Add(name);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error in Refresh: {ex.Message}");
-                    }
-                });
-
+            try
+            {
                 task.Wait();
-
-                this.apps.AddRange(sessionApps);
             }
+            catch (AggregateException aggEx)
+            {
+                foreach (var ex in aggEx.InnerExceptions)
+                {
+                    Console.WriteLine($"Exception in task: {ex.Message}\n{ex.StackTrace}");
+                }
+            }
+
+            apps.AddRange(sessionApps);
         }
 
         private void InitializeDefaultDevice()
         {
-            using (var enumerator = new MMDeviceEnumerator())
+            Task.Run(() =>
             {
-                defaultPlaybackDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                try
+                {
+                    InitializeCom();
+                    using var enumerator = new MMDeviceEnumerator();
+                    defaultPlaybackDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error in InitializeDefaultDevice: {ex.Message}");
+                }
+                finally
+                {
+                    ComHelper.CoUninitialize();
+                }
+            }).Wait();
+        }
+
+        private void InitializeCom()
+        {
+            int hr = ComHelper.CoInitializeEx(IntPtr.Zero, ComHelper.COINIT.COINIT_MULTITHREADED);
+            if (hr == (int)HResult.RPC_E_CHANGED_MODE)
+            {
+                Console.WriteLine("COM already initialized with a different threading model");
             }
+            else if (hr < 0)
+            {
+                throw new COMException("Failed to initialize COM library", hr);
+            }
+        }
+
+        private IEnumerable<string> GetActiveSessions()
+        {
+            var sessionNames = new List<string>();
+
+            using var sessionManager = AudioSessionManager2.FromMMDevice(defaultPlaybackDevice);
+            var sessionEnumerator = sessionManager.GetSessionEnumerator();
+
+            foreach (var session in sessionEnumerator)
+            {
+                using var audioSessionControl = session.QueryInterface<AudioSessionControl2>();
+                if (audioSessionControl.IsSystemSoundSession)
+                    continue;
+
+                string name = GetSessionDisplayName(audioSessionControl);
+                if (!string.IsNullOrEmpty(name) && !sessionNames.Contains(name))
+                {
+                    sessionNames.Add(name);
+                    Console.WriteLine($"Found audio session: {name}");
+                }
+            }
+
+            Console.WriteLine($"Total sessions found: {sessionNames.Count}");
+            return sessionNames;
         }
 
         private string GetSessionDisplayName(AudioSessionControl2 audioSession)
         {
             string name = null;
 
+            name = GetProcessName(audioSession.Process);
+            if (!string.IsNullOrEmpty(name))
+                return name.Trim();
+
+            name = audioSession.DisplayName;
+            if (!string.IsNullOrEmpty(name))
+                return name.Trim();
+
+            name = audioSession.SessionIdentifier;
+            return name?.Trim();
+        }
+
+        private string GetProcessName(Process process)
+        {
             try
             {
-                // Attempt to get the process associated with the audio session
-                using (var process = audioSession.Process)
-                {
-                    if (process != null)
-                    {
-                        name = process.ProcessName;
-                    }
-                }
+                return process?.ProcessName;
             }
-            catch
+            catch (Exception ex)
             {
-                // Process might have exited or be unavailable
+                Console.WriteLine($"Error getting process name: {ex.Message}");
+                return null;
             }
+        }
 
-            // If process name is not available, use DisplayName
-            if (string.IsNullOrEmpty(name))
-            {
-                name = audioSession.DisplayName;
-            }
+        public void Dispose()
+        {
+            defaultPlaybackDevice?.Dispose();
+        }
 
-            // If still not available, use the SessionIdentifier or SessionInstanceIdentifier as a last resort
-            if (string.IsNullOrEmpty(name))
-            {
-                name = audioSession.SessionIdentifier;
-            }
-
-            // Clean up the name if necessary
-            if (!string.IsNullOrEmpty(name))
-            {
-                name = name.Trim();
-            }
-
-            return name;
+        public enum HResult : int
+        {
+            S_OK = 0,
+            S_FALSE = 1,
+            RPC_E_CHANGED_MODE = unchecked((int)0x80010106)
         }
     }
 }

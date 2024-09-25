@@ -1,87 +1,132 @@
 ﻿using System;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using CSCore.CoreAudioAPI;
-using System.Runtime.InteropServices;
 
 namespace AutoVolumeControl
 {
     class VolumeControl : ApplicationContext
     {
-        private AppSettings appSettings;
-        private Apps apps;
-        private NotifyIcon notifyIcon;
+        private readonly AppSettings appSettings;
+        private readonly Apps apps;
+        private readonly NotifyIcon notifyIcon;
         private MMDevice defaultPlaybackDevice;
         private AudioEndpointVolumeCallback volumeCallback;
         private AudioEndpointVolume defaultDeviceVolume;
 
+        private readonly Control uiControl;
+
         public VolumeControl()
         {
-            this.apps = new Apps();
-            this.appSettings = new AppSettings();
+            uiControl = new Control();
+            uiControl.CreateControl();
 
-            this.notifyIcon = new NotifyIcon
+            appSettings = new AppSettings();
+            apps = new Apps();
+
+            notifyIcon = CreateNotifyIcon();
+            InitializeDefaultDevice();
+        }
+
+        private NotifyIcon CreateNotifyIcon()
+        {
+            var icon = new NotifyIcon
             {
-                Icon = AutoVolumeControl.Properties.Resources.icon,
-                ContextMenuStrip = new ContextMenuStrip()
+                Icon = Properties.Resources.icon,
+                ContextMenuStrip = new ContextMenuStrip(),
+                Visible = true
             };
 
-            MenuHandler menuHandler = new MenuHandler(this.notifyIcon.ContextMenuStrip, this.appSettings, this.apps);
-            menuHandler.onExit(new EventHandler(Exit));
+            var menuHandler = new MenuHandler(icon.ContextMenuStrip, appSettings, apps);
+            menuHandler.OnExit(Exit);
 
-            this.notifyIcon.Visible = true;
-
-            InitializeDefaultDevice();
+            return icon;
         }
 
         private void InitializeDefaultDevice()
         {
-            try
+            Task.Run(() =>
             {
-                // Initialize COM on the current thread
-                CoInitializeEx(IntPtr.Zero, COINIT.COINIT_MULTITHREADED);
-
-                // Create an MMDeviceEnumerator instance
-                using (var enumerator = new MMDeviceEnumerator())
+                try
                 {
-                    // Get the default playback device
-                    defaultPlaybackDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                    InitializeCom();
 
-                    // Get the AudioEndpointVolume interface from the device
-                    defaultDeviceVolume = AudioEndpointVolume.FromDevice(defaultPlaybackDevice);
+                    using var enumerator = new MMDeviceEnumerator();
+                    var playbackDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
 
-                    // Create a new callback object and register it
-                    volumeCallback = new AudioEndpointVolumeCallback(defaultPlaybackDevice, this.appSettings, this.apps);
-                    defaultDeviceVolume.RegisterControlChangeNotify(volumeCallback);
+                    var deviceVolume = AudioEndpointVolume.FromDevice(playbackDevice);
+                    var volumeCallback = new AudioEndpointVolumeCallback(playbackDevice, appSettings, apps);
+                    deviceVolume.RegisterControlChangeNotify(volumeCallback);
+
+                    AssignDeviceVariables(playbackDevice, deviceVolume, volumeCallback);
                 }
-            }
-            catch (Exception ex)
+                catch (Exception ex)
+                {
+                    ShowError(ex.Message);
+                }
+                finally
+                {
+                    ComHelper.CoUninitialize();
+                }
+            });
+        }
+
+        private void InitializeCom()
+        {
+            int hr = ComHelper.CoInitializeEx(IntPtr.Zero, ComHelper.COINIT.COINIT_MULTITHREADED);
+            if (hr == (int)ComHelper.HResult.RPC_E_CHANGED_MODE)
             {
-                MessageBox.Show($"Error initializing default playback device: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Console.WriteLine("COM already initialized with a different threading model in VolumeControl");
+            }
+            else if (hr < 0)
+            {
+                throw new COMException("Failed to initialize COM library", hr);
             }
         }
 
-        // Import CoInitializeEx from the ole32.dll
-        [DllImport("ole32.dll")]
-        private static extern int CoInitializeEx(IntPtr pvReserved, COINIT dwCoInit);
-
-        // Define the COINIT enumeration
-        private enum COINIT : uint
+        private void AssignDeviceVariables(MMDevice playbackDevice, AudioEndpointVolume deviceVolume, AudioEndpointVolumeCallback callback)
         {
-            COINIT_MULTITHREADED = 0x0,
-            COINIT_APARTMENTTHREADED = 0x2,
-            COINIT_DISABLE_OLE1DDE = 0x4,
-            COINIT_SPEED_OVER_MEMORY = 0x8
+            uiControl.BeginInvoke((Action)(() =>
+            {
+                defaultPlaybackDevice = playbackDevice;
+                defaultDeviceVolume = deviceVolume;
+                volumeCallback = callback;
+            }));
+        }
+
+        private void ShowError(string message)
+        {
+            uiControl.BeginInvoke((Action)(() =>
+            {
+                notifyIcon.BalloonTipText = $"Error initializing default playback device: {message}";
+                notifyIcon.ShowBalloonTip(5000);
+            }));
         }
 
         public void Exit(object sender, EventArgs e)
         {
-            if (defaultDeviceVolume != null)
+            Dispose();
+            Application.ExitThread();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
             {
-                defaultDeviceVolume.UnregisterControlChangeNotify(volumeCallback);
+                volumeCallback?.Dispose();
+                defaultDeviceVolume?.UnregisterControlChangeNotify(volumeCallback);
+                defaultDeviceVolume?.Dispose();
+                defaultPlaybackDevice?.Dispose();
+                apps?.Dispose();
+                if (notifyIcon != null)
+                {
+                    notifyIcon.Visible = false;
+                    notifyIcon.Dispose();
+                }
+                uiControl?.Dispose();
             }
-            this.notifyIcon.Visible = false;
-            Application.ExitThread(); // Ensure proper application exit
+            base.Dispose(disposing);
         }
     }
 }
