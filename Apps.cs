@@ -12,26 +12,38 @@ namespace AutoVolumeControl
         private readonly List<string> apps;
         private MMDevice defaultPlaybackDevice;
 
+        private readonly object lockObj = new object();
+
+        public event EventHandler AppsUpdated;
+
+        private readonly AppSettings appSettings;
+
         public Apps()
         {
             apps = new List<string>();
+            appSettings = new AppSettings();
             InitializeDefaultDevice();
         }
 
         public List<string> GetApps()
         {
-            Refresh();
-            return new List<string>(apps);
+            lock (lockObj)
+            {
+                return new List<string>(apps);
+            }
+        }
+
+        public void AddRange(IEnumerable<string> newApps)
+        {
+            lock (lockObj)
+            {
+                apps.AddRange(newApps);
+            }
         }
 
         public void Refresh()
         {
-            apps.Clear();
-
-            if (defaultPlaybackDevice == null)
-                return;
-
-            var sessionApps = new List<string>();
+            List<string> sessionApps = new List<string>();
 
             var task = Task.Run(() =>
             {
@@ -44,7 +56,6 @@ namespace AutoVolumeControl
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Error in Refresh Task: {ex.Message}\n{ex.StackTrace}");
-                    throw;
                 }
                 finally
                 {
@@ -64,7 +75,35 @@ namespace AutoVolumeControl
                 }
             }
 
-            apps.AddRange(sessionApps);
+            bool isUpdated = false;
+
+            lock (lockObj)
+            {
+                foreach (var app in sessionApps)
+                {
+                    if (!appSettings.Exists(app))
+                    {
+                        appSettings.Set(app, "True");                      
+                    }
+                    if (!apps.Contains(app))
+                    {
+                        apps.Add(app);
+                        isUpdated = true;
+                    }
+                }
+
+                int originalCount = apps.Count;
+                apps.RemoveAll(a => !sessionApps.Contains(a));
+                if (apps.Count != originalCount)
+                {
+                    isUpdated = true;
+                }
+            }
+
+            if (isUpdated)
+            {
+                AppsUpdated?.Invoke(this, EventArgs.Empty);
+            }
         }
 
         private void InitializeDefaultDevice()

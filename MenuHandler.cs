@@ -27,8 +27,7 @@ namespace AutoVolumeControl
 
         private void ContextMenuStrip_Opening(object sender, System.ComponentModel.CancelEventArgs e)
         {
-            Generate();
-            e.Cancel = false;
+            apps.Refresh();
         }
 
         public void Generate()

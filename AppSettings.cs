@@ -1,4 +1,5 @@
-﻿using System.Windows.Forms;
+﻿using System;
+using System.Windows.Forms;
 using Microsoft.Win32;
 
 namespace AutoVolumeControl
@@ -7,6 +8,7 @@ namespace AutoVolumeControl
     {
         private static readonly string appPath = $"SOFTWARE\\{Application.ProductName}";
         private readonly RegistryKey appRegistryRoot;
+        private readonly object lockObj = new object();
 
         public AppSettings()
         {
@@ -16,17 +18,26 @@ namespace AutoVolumeControl
 
         public void Set(string name, string value)
         {
-            appRegistryRoot.SetValue(name, value);
+            lock (lockObj)
+            {
+                appRegistryRoot.SetValue(name, value);
+            }
         }
 
         public string Get(string name)
         {
-            return appRegistryRoot.GetValue(name) as string;
+            lock (lockObj)
+            {
+                return appRegistryRoot.GetValue(name) as string;
+            }
         }
 
         public bool Exists(string name)
         {
-            return appRegistryRoot.GetValue(name) != null;
+            lock (lockObj)
+            {
+                return appRegistryRoot.GetValue(name) != null;
+            }
         }
     }
 }

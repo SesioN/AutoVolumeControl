@@ -97,6 +97,7 @@ namespace AutoVolumeControl
 
         public void Dispose()
         {
+          
         }
 
         public enum HResult : int

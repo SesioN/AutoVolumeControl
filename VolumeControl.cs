@@ -16,6 +16,7 @@ namespace AutoVolumeControl
         private AudioEndpointVolume defaultDeviceVolume;
 
         private readonly Control uiControl;
+        private readonly MenuHandler menuHandler;
 
         public VolumeControl()
         {
@@ -24,8 +25,12 @@ namespace AutoVolumeControl
 
             appSettings = new AppSettings();
             apps = new Apps();
+            apps.AppsUpdated += OnAppsUpdated;
 
             notifyIcon = CreateNotifyIcon();
+            menuHandler = new MenuHandler(notifyIcon.ContextMenuStrip, appSettings, apps);
+            menuHandler.OnExit(Exit);
+
             InitializeDefaultDevice();
         }
 
@@ -37,9 +42,6 @@ namespace AutoVolumeControl
                 ContextMenuStrip = new ContextMenuStrip(),
                 Visible = true
             };
-
-            var menuHandler = new MenuHandler(icon.ContextMenuStrip, appSettings, apps);
-            menuHandler.OnExit(Exit);
 
             return icon;
         }
@@ -92,6 +94,8 @@ namespace AutoVolumeControl
                 defaultPlaybackDevice = playbackDevice;
                 defaultDeviceVolume = deviceVolume;
                 volumeCallback = callback;
+
+                apps.Refresh();
             }));
         }
 
@@ -101,6 +105,14 @@ namespace AutoVolumeControl
             {
                 notifyIcon.BalloonTipText = $"Error initializing default playback device: {message}";
                 notifyIcon.ShowBalloonTip(5000);
+            }));
+        }
+
+        private void OnAppsUpdated(object sender, EventArgs e)
+        {
+            uiControl.BeginInvoke((Action)(() =>
+            {
+                menuHandler.Generate();
             }));
         }
 
@@ -114,8 +126,8 @@ namespace AutoVolumeControl
         {
             if (disposing)
             {
-                volumeCallback?.Dispose();
                 defaultDeviceVolume?.UnregisterControlChangeNotify(volumeCallback);
+                volumeCallback?.Dispose();
                 defaultDeviceVolume?.Dispose();
                 defaultPlaybackDevice?.Dispose();
                 apps?.Dispose();
