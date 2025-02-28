@@ -2,17 +2,20 @@
 using System.Drawing;
 using System.Windows.Forms;
 using Microsoft.Win32;
+using MaterialSkin;
+using MaterialSkin.Controls;
+using System.Drawing.Printing;
 
 namespace AutoVolumeControl
 {
     class MenuHandler
     {
-        private readonly ContextMenuStrip contextMenuStrip;
+        private readonly MaterialContextMenuStrip contextMenuStrip;
         private EventHandler onExitHandler;
         private readonly AppSettings appSettings;
         private readonly Apps apps;
 
-        public MenuHandler(ContextMenuStrip contextMenuStrip, AppSettings appSettings, Apps apps)
+        public MenuHandler(MaterialContextMenuStrip contextMenuStrip, AppSettings appSettings, Apps apps)
         {
             this.appSettings = appSettings;
             this.apps = apps;
@@ -28,6 +31,7 @@ namespace AutoVolumeControl
         private void ContextMenuStrip_Opening(object sender, System.ComponentModel.CancelEventArgs e)
         {
             apps.Refresh();
+            Generate();
         }
 
         public void Generate()
@@ -37,6 +41,7 @@ namespace AutoVolumeControl
             AddAppItems();
             AddSeparator();
             AddAutoRunItem();
+            AddSeparator();
             AddExitItem();
 
             Console.WriteLine("Context menu generated with items:");
@@ -48,12 +53,21 @@ namespace AutoVolumeControl
 
         private void AddHeader()
         {
-            var header = new ToolStripMenuItem($"{Application.ProductName} (v{Application.ProductVersion})")
+            var label = new MaterialLabel
             {
-                BackColor = Color.Transparent
+                Text = $"{Application.ProductName} (v{Application.ProductVersion})",
+                AutoSize = true,
+                FontType = MaterialSkinManager.fontType.H6
             };
-            contextMenuStrip.Items.Add(header);
-            AddSeparator(0, 0, 0, 10);
+
+            var host = new ToolStripControlHost(label)
+            {
+                BackColor = Color.Transparent,
+                Margin = new Padding(0, 5, 0, 5)
+            };
+            contextMenuStrip.Items.Add(host);
+
+            AddSeparator(0, 0, 0, 0);
         }
 
         private void AddAppItems()
@@ -63,22 +77,23 @@ namespace AutoVolumeControl
             foreach (var appName in appList)
             {
                 var checkbox = CreateAppCheckBox(appName);
-                var toolStripControlHost = new ToolStripControlHost(checkbox)
+                var host = new ToolStripControlHost(checkbox)
                 {
                     BackColor = Color.Transparent
                 };
-                contextMenuStrip.Items.Add(toolStripControlHost);
+                contextMenuStrip.Items.Add(host);
                 Console.WriteLine($"Added app to menu: {appName}");
             }
         }
 
-        private CheckBox CreateAppCheckBox(string appName)
+        private MaterialCheckbox CreateAppCheckBox(string appName)
         {
-            var checkbox = new CheckBox
+            var checkbox = new MaterialCheckbox
             {
                 Text = $"App: {appName}",
                 Name = appName,
-                Checked = GetAppSetting(appName)
+                Checked = GetAppSetting(appName),
+                AutoSize = true
             };
             checkbox.CheckedChanged += (sender, e) => OnAppCheckBoxChanged(checkbox);
             return checkbox;
@@ -94,21 +109,25 @@ namespace AutoVolumeControl
             return Convert.ToBoolean(appSettings.Get(appName));
         }
 
-        private void OnAppCheckBoxChanged(CheckBox checkbox)
+        private void OnAppCheckBoxChanged(MaterialCheckbox checkbox)
         {
             appSettings.Set(checkbox.Name, checkbox.Checked.ToString());
         }
 
         private void AddAutoRunItem()
         {
-            var checkbox = new CheckBox { Text = "Start with Windows" };
+            var checkbox = new MaterialCheckbox
+            {
+                Text = "Start with Windows",
+                AutoSize = true,
+            };
             checkbox.Checked = IsAutoRunEnabled();
             checkbox.CheckedChanged += (sender, e) => OnAutoRunCheckBoxChanged(checkbox);
-            var toolStripControlHost = new ToolStripControlHost(checkbox)
+            var host = new ToolStripControlHost(checkbox)
             {
                 BackColor = Color.Transparent
             };
-            contextMenuStrip.Items.Add(toolStripControlHost);
+            contextMenuStrip.Items.Add(host);
         }
 
         private bool IsAutoRunEnabled()
@@ -117,7 +136,7 @@ namespace AutoVolumeControl
             return autoStartRegKey?.GetValue(Application.ProductName) != null;
         }
 
-        private void OnAutoRunCheckBoxChanged(CheckBox checkbox)
+        private void OnAutoRunCheckBoxChanged(MaterialCheckbox checkbox)
         {
             using var autoStartRegKey = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true);
             if (checkbox.Checked)
@@ -132,12 +151,26 @@ namespace AutoVolumeControl
 
         private void AddExitItem()
         {
-            var exitItem = new ToolStripMenuItem("Exit")
+            var button = new MaterialButton
             {
-                BackColor = Color.Transparent
+                Text = "Exit",
+                AutoSize = false,
+               
+                Dock = DockStyle.Fill,
+                Height = 36
             };
-            exitItem.Click += Exit;
-            contextMenuStrip.Items.Add(exitItem);
+            button.Click += (sender, e) => Exit(sender, e);
+
+            var host = new ToolStripControlHost(button)
+            {
+                AutoSize = false,
+                Margin = new Padding(0, 10, 0, 10),
+                BackColor = Color.Transparent,
+                Width = 270,
+                Height = button.Height
+            };
+
+            contextMenuStrip.Items.Add(host);
         }
 
         private void Exit(object sender, EventArgs e)
@@ -146,7 +179,7 @@ namespace AutoVolumeControl
             Application.Exit();
         }
 
-        private void AddSeparator(int left = 0, int top = 10, int right = 0, int bottom = 0)
+        private void AddSeparator(int left = 0, int top = 0, int right = 0, int bottom = 0)
         {
             contextMenuStrip.Items.Add(new ToolStripSeparator
             {

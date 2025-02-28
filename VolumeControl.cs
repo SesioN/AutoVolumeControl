@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using CSCore.CoreAudioAPI;
+using MaterialSkin.Controls;
 
 namespace AutoVolumeControl
 {
@@ -27,8 +28,7 @@ namespace AutoVolumeControl
             apps = new Apps();
             apps.AppsUpdated += OnAppsUpdated;
 
-            notifyIcon = CreateNotifyIcon();
-            menuHandler = new MenuHandler(notifyIcon.ContextMenuStrip, appSettings, apps);
+            notifyIcon = CreateNotifyIcon();            menuHandler = new MenuHandler((MaterialContextMenuStrip)notifyIcon.ContextMenuStrip, appSettings, apps);
             menuHandler.OnExit(Exit);
 
             InitializeDefaultDevice();
@@ -39,7 +39,7 @@ namespace AutoVolumeControl
             var icon = new NotifyIcon
             {
                 Icon = Properties.Resources.icon,
-                ContextMenuStrip = new ContextMenuStrip(),
+                ContextMenuStrip = new MaterialContextMenuStrip(),
                 Visible = true
             };
 
