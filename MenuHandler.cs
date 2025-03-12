@@ -74,16 +74,33 @@ namespace AutoVolumeControl
         {
             var appList = apps.GetApps();
             Console.WriteLine($"Number of apps retrieved: {appList.Count}");
+
+            if (appList.Count == 0)
+                return;
+
+            var panel = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = true,
+                Padding = new Padding(0, 10, 0, 10),
+            };
+
             foreach (var appName in appList)
             {
                 var checkbox = CreateAppCheckBox(appName);
-                var host = new ToolStripControlHost(checkbox)
-                {
-                    BackColor = Color.Transparent
-                };
-                contextMenuStrip.Items.Add(host);
+                panel.Controls.Add(checkbox);
+
                 Console.WriteLine($"Added app to menu: {appName}");
             }
+
+            var host = new ToolStripControlHost(panel)
+            {
+                AutoSize = true,
+            };
+            
+            contextMenuStrip.Items.Add(host);
         }
 
         private MaterialCheckbox CreateAppCheckBox(string appName)
@@ -123,6 +140,8 @@ namespace AutoVolumeControl
             };
             checkbox.Checked = IsAutoRunEnabled();
             checkbox.CheckedChanged += (sender, e) => OnAutoRunCheckBoxChanged(checkbox);
+
+
             var host = new ToolStripControlHost(checkbox)
             {
                 BackColor = Color.Transparent
@@ -155,7 +174,6 @@ namespace AutoVolumeControl
             {
                 Text = "Exit",
                 AutoSize = false,
-               
                 Dock = DockStyle.Fill,
                 Height = 36
             };
