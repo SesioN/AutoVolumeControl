@@ -38,12 +38,18 @@ namespace AutoVolumeControl
         {
             var icon = new NotifyIcon
             {
-                Icon = Properties.Resources.icon,
+                Icon = LoadIcon(),
                 ContextMenuStrip = new MaterialContextMenuStrip(),
                 Visible = true
             };
 
             return icon;
+        }
+
+        private static System.Drawing.Icon LoadIcon()
+        {
+            using var stream = typeof(VolumeControl).Assembly.GetManifestResourceStream("AutoVolumeControl.icon.ico");
+            return new System.Drawing.Icon(stream);
         }
 
         private void InitializeDefaultDevice()
