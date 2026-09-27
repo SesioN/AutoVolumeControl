@@ -25,7 +25,7 @@ namespace AutoVolumeControl
         /// A failing session is skipped so the others are still synced.
         /// </summary>
         /// <returns>The number of sessions that were changed.</returns>
-        public static int Sync(float masterVolume, bool muted, IEnumerable<IAudioSession> sessions, AppPreferences preferences)
+        public static int Sync(float masterVolume, bool muted, IEnumerable<IAudioSession> sessions, AppPreferences preferences, CorrectionThrottle throttle = null)
         {
             int changed = 0;
             foreach (var session in sessions)
@@ -38,19 +38,19 @@ namespace AutoVolumeControl
                     if (!preferences.IsEnabled(session.Name))
                         continue;
 
-                    bool sessionChanged = false;
-                    if (Math.Abs(session.Volume - masterVolume) > VolumeTolerance)
-                    {
+                    bool volumeDiffers = Math.Abs(session.Volume - masterVolume) > VolumeTolerance;
+                    bool muteDiffers = session.Muted != muted;
+                    if (!volumeDiffers && !muteDiffers)
+                        continue;
+
+                    if (throttle != null && !throttle.Allow(session.Name, masterVolume, muted))
+                        continue;
+
+                    if (volumeDiffers)
                         session.Volume = masterVolume;
-                        sessionChanged = true;
-                    }
-                    if (session.Muted != muted)
-                    {
+                    if (muteDiffers)
                         session.Muted = muted;
-                        sessionChanged = true;
-                    }
-                    if (sessionChanged)
-                        changed++;
+                    changed++;
                 }
                 catch (Exception ex)
                 {

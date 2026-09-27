@@ -1,6 +1,5 @@
 using System;
 using System.Diagnostics;
-using System.Threading;
 using System.Windows.Forms;
 
 namespace AutoVolumeControl
@@ -17,6 +16,9 @@ namespace AutoVolumeControl
             if (!instance.IsFirstInstance)
                 return;
 
+            using var log = LogFile.Start();
+            Trace.WriteLine($"Starting {Application.ProductName} {Application.ProductVersion}");
+
             // A tray app has no window to show the default error dialog in a useful way; log and keep running.
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += (sender, e) => Trace.WriteLine($"Unhandled UI exception: {e.Exception}");
@@ -26,6 +28,7 @@ namespace AutoVolumeControl
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new VolumeControl());
+            Trace.WriteLine("Exited");
         }
     }
 }

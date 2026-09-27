@@ -102,16 +102,48 @@ namespace AutoVolumeControl.Tests
             Assert.Equal(1, backend.AttachCount);
         }
 
+        [Theory]
+        [InlineData(1, 3)]
+        [InlineData(2, 6)]
+        [InlineData(3, 12)]
+        [InlineData(5, 48)]
+        [InlineData(6, 60)]
+        [InlineData(1000, 60)]
+        public void RetryDelay_DoublesUpToOneMinute(int failures, int expectedSeconds)
+        {
+            Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), AutoVolumeService.RetryDelay(TimeSpan.FromSeconds(3), failures));
+        }
+
         [Fact]
-        public void WhileNoDevice_RetriesKeepGoing_ButAreNotBusy()
+        public void WhileNoDevice_RetriesBackOff()
         {
             backend.AttachException = new InvalidOperationException("no device");
             try { service.Start().Wait(Timeout); } catch (AggregateException) { }
 
-            Thread.Sleep(RetryInterval.Milliseconds * 10);
+            // 50 ms interval: attempts at about 0, 50, 150, 350, 750 ms. Without backoff there would be ~20.
+            Thread.Sleep(1000);
 
-            // Roughly one attempt per interval, not a tight loop.
-            Assert.InRange(backend.AttachCount, 3, 20);
+            Assert.InRange(backend.AttachCount, 2, 8);
+        }
+
+        [Fact]
+        public void IsHealthy_ReflectsTheLastReconcile()
+        {
+            backend.AttachException = new InvalidOperationException("no device");
+            try { service.Start().Wait(Timeout); } catch (AggregateException) { }
+            Assert.False(service.IsHealthy);
+
+            backend.AttachException = null;
+            WaitUntil(() => service.IsHealthy, "the retry should succeed");
+        }
+
+        [Fact]
+        public void Start_Twice_Throws()
+        {
+            StartAttached();
+            // Start() throws synchronously; it does not return a faulted task.
+            var error = Record.Exception(() => { service.Start(); });
+            Assert.IsType<InvalidOperationException>(error);
         }
 
         // ---- master volume ----
@@ -237,6 +269,47 @@ namespace AutoVolumeControl.Tests
             Flush();
 
             Assert.Equal(0.4f, chrome.Volume);
+        }
+
+        [Fact]
+        public void AppFightingOverItsVolume_IsNotCorrectedEndlessly()
+        {
+            var game = new FakeSession("game");
+            backend.SetSessions(game);
+            backend.SetMaster(0.4f, false);
+            StartAttached();
+
+            for (int i = 0; i < 50; i++)
+            {
+                game.ChangeOwnVolume(1f);
+                backend.RaiseSessionsChanged();
+                Flush();
+            }
+
+            // Every correction towards the same 0.4 counts, including the one at start.
+            Assert.Equal(CorrectionThrottle.MaxRepeatedCorrections, game.VolumeWrites);
+        }
+
+        [Fact]
+        public void MasterChangesAfterAFight_AreStillApplied()
+        {
+            var game = new FakeSession("game");
+            var chrome = new FakeSession("chrome");
+            backend.SetSessions(game, chrome);
+            backend.SetMaster(0.4f, false);
+            StartAttached();
+            for (int i = 0; i < 50; i++)
+            {
+                game.ChangeOwnVolume(1f);
+                backend.RaiseSessionsChanged();
+                Flush();
+            }
+
+            backend.SetMaster(0.2f, false);
+            backend.RaiseMasterVolumeChanged();
+            Flush();
+
+            Assert.Equal(0.2f, chrome.Volume);
         }
 
         [Fact]
@@ -448,6 +521,24 @@ namespace AutoVolumeControl.Tests
             Thread.Sleep(RetryInterval.Milliseconds * 5);
 
             Assert.Equal(attempts, backend.AttachCount);
+        }
+
+        [Fact]
+        public void Dispose_WhenTheAudioThreadIsStuck_StillReturns()
+        {
+            // E.g. a COM call that never returns: exiting the app must not hang forever.
+            StartAttached();
+            using var gate = new ManualResetEventSlim();
+            backend.GetMasterVolumeGate = gate;
+            backend.GetMasterVolumeEntered.Reset();
+            backend.RaiseMasterVolumeChanged();
+            Assert.True(backend.GetMasterVolumeEntered.Wait(Timeout));
+
+            var watch = Stopwatch.StartNew();
+            service.Dispose();
+
+            Assert.True(watch.Elapsed < TimeSpan.FromSeconds(12), watch.Elapsed.ToString());
+            gate.Set();
         }
 
         [Fact]

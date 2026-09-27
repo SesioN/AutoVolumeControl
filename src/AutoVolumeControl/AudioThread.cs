@@ -55,9 +55,9 @@ namespace AutoVolumeControl
                     }
                 });
             }
-            catch (InvalidOperationException)
+            catch (Exception ex) when (ex is InvalidOperationException || ex is ObjectDisposedException)
             {
-                // Adding after Dispose.
+                // Adding after Dispose (completed or already disposed queue).
                 tcs.SetException(new ObjectDisposedException(nameof(AudioThread)));
             }
             return tcs.Task;
@@ -78,8 +78,9 @@ namespace AutoVolumeControl
                 return;
 
             queue.CompleteAdding();
-            if (!IsCurrentThread)
-                thread.Join(TimeSpan.FromSeconds(5));
+            // Only dispose the queue once the thread is done with it; if it hangs, leave it to the GC.
+            if (!IsCurrentThread && thread.Join(TimeSpan.FromSeconds(5)))
+                queue.Dispose();
         }
     }
 }

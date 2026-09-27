@@ -9,6 +9,12 @@ namespace AutoVolumeControl
     /// <summary>The tray application: owns the tray icon, the menu and the volume service.</summary>
     class VolumeControl : ApplicationContext
     {
+        /// <summary>
+        /// A start failure is only reported if it persists this long; at logon the audio service is often not
+        /// ready yet and the automatic retry succeeds a few seconds later.
+        /// </summary>
+        public static readonly TimeSpan DefaultErrorNotificationDelay = TimeSpan.FromSeconds(15);
+
         private readonly AppSettings appSettings;
         private readonly Apps apps;
         private readonly NotifyIcon notifyIcon;
@@ -19,11 +25,11 @@ namespace AutoVolumeControl
         private bool disposed;
 
         public VolumeControl()
-            : this(new CoreAudioBackend(), new AppSettings(), new AutoStart(Application.ProductName, Application.ExecutablePath), showTrayIcon: true)
+            : this(new CoreAudioBackend(), new AppSettings(), new AutoStart(Application.ProductName, Application.ExecutablePath), showTrayIcon: true, DefaultErrorNotificationDelay)
         {
         }
 
-        internal VolumeControl(IAudioBackend backend, AppSettings appSettings, AutoStart autoStart, bool showTrayIcon)
+        internal VolumeControl(IAudioBackend backend, AppSettings appSettings, AutoStart autoStart, bool showTrayIcon, TimeSpan errorNotificationDelay)
         {
             uiControl = new Control();
             uiControl.CreateControl();
@@ -43,11 +49,19 @@ namespace AutoVolumeControl
 
             service = new AutoVolumeService(backend, preferences, apps);
             menuHandler = new MenuHandler(contextMenuStrip, preferences, apps, autoStart, service.RefreshAsync);
-            menuHandler.ExitRequested += Exit;
+            // Exit from the button's click handler would dispose the menu while it is still processing the click.
+            menuHandler.ExitRequested += (sender, e) => RunOnUiThread(() => Exit(sender, e));
             apps.AppsUpdated += OnAppsUpdated;
+            menuHandler.Generate();
 
             Started = service.Start();
-            Started.ContinueWith(t => ShowError(t.Exception.GetBaseException().Message), TaskContinuationOptions.OnlyOnFaulted);
+            Started.ContinueWith(
+                t => Task.Delay(errorNotificationDelay).ContinueWith(_ =>
+                {
+                    if (!service.IsHealthy)
+                        ShowError(t.Exception.GetBaseException().Message);
+                }),
+                TaskContinuationOptions.OnlyOnFaulted);
         }
 
         internal Task Started { get; }
@@ -55,6 +69,9 @@ namespace AutoVolumeControl
         internal MenuHandler Menu => menuHandler;
 
         internal ContextMenuStrip ContextMenu => contextMenuStrip;
+
+        /// <summary>The last error shown as a balloon tip, for tests.</summary>
+        internal string ShownError { get; private set; }
 
         /// <summary>
         /// Picks the image matching the tray size (e.g. 24x24 at 150 %). Without a size, the 48x48 image
@@ -70,6 +87,7 @@ namespace AutoVolumeControl
         {
             RunOnUiThread(() =>
             {
+                ShownError = message;
                 notifyIcon.BalloonTipText = $"Error initializing default playback device: {message}";
                 notifyIcon.ShowBalloonTip(5000);
             });

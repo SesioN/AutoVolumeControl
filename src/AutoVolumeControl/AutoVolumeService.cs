@@ -14,12 +14,13 @@ namespace AutoVolumeControl
     /// if needed, read the sessions, update the app list and correct volumes that differ. It is event driven:
     /// master volume changes, session changes (created, state, own volume, process exit), device changes and
     /// preference changes trigger it. A timer only runs while the device is not usable (e.g. at logon before the
-    /// audio service is ready, or after it restarted) and retries until attaching succeeds.
+    /// audio service is ready, or after it restarted) and retries with a growing delay until it works again.
     /// </para>
     /// </summary>
     sealed class AutoVolumeService : IDisposable
     {
         public static readonly TimeSpan DefaultRetryInterval = TimeSpan.FromSeconds(3);
+        public static readonly TimeSpan MaxRetryInterval = TimeSpan.FromSeconds(60);
 
         private readonly IAudioBackend backend;
         private readonly AppPreferences preferences;
@@ -27,18 +28,23 @@ namespace AutoVolumeControl
         private readonly TimeSpan retryInterval;
         private readonly AudioThread audioThread = new AudioThread();
         private readonly Timer retryTimer;
+        private readonly CorrectionThrottle throttle;
+        private int started;
+        private int healthy;
         private int reconcilePending;
         private int attachRequested;
         private int disposeCalled;
         // Only read and written on the audio thread.
         private bool disposed;
+        private int consecutiveFailures;
 
-        public AutoVolumeService(IAudioBackend backend, AppPreferences preferences, Apps apps, TimeSpan? retryInterval = null)
+        public AutoVolumeService(IAudioBackend backend, AppPreferences preferences, Apps apps, TimeSpan? retryInterval = null, CorrectionThrottle throttle = null)
         {
             this.backend = backend;
             this.preferences = preferences;
             this.apps = apps;
             this.retryInterval = retryInterval ?? DefaultRetryInterval;
+            this.throttle = throttle ?? new CorrectionThrottle();
             retryTimer = new Timer(_ => RequestSync(), null, Timeout.Infinite, Timeout.Infinite);
         }
 
@@ -48,6 +54,9 @@ namespace AutoVolumeControl
         /// </summary>
         public Task Start()
         {
+            if (Interlocked.Exchange(ref started, 1) != 0)
+                throw new InvalidOperationException("The service was already started.");
+
             backend.MasterVolumeChanged += OnChanged;
             backend.SessionsChanged += OnChanged;
             backend.ReattachRequired += OnReattachRequired;
@@ -61,6 +70,9 @@ namespace AutoVolumeControl
                     throw error;
             });
         }
+
+        /// <summary>True when the last reconcile succeeded.</summary>
+        public bool IsHealthy => Volatile.Read(ref healthy) == 1;
 
         /// <summary>Brings the app list and the volumes up to date.</summary>
         public Task RefreshAsync() => audioThread.Post(() => { Reconcile(); });
@@ -101,6 +113,7 @@ namespace AutoVolumeControl
                 return null;
 
             var error = AttachIfNeeded() ?? SyncSessions();
+            Volatile.Write(ref healthy, error == null ? 1 : 0);
             ScheduleRetry(error != null);
             return error;
         }
@@ -113,6 +126,7 @@ namespace AutoVolumeControl
             try
             {
                 backend.Attach();
+                Trace.WriteLine("Attached to the default playback device.");
                 return null;
             }
             catch (Exception ex)
@@ -132,7 +146,7 @@ namespace AutoVolumeControl
                 try
                 {
                     UpdateApps(sessions);
-                    VolumeSynchronizer.Sync(volume, muted, sessions, preferences);
+                    VolumeSynchronizer.Sync(volume, muted, sessions, preferences, throttle);
                 }
                 finally
                 {
@@ -149,20 +163,34 @@ namespace AutoVolumeControl
             }
         }
 
-        /// <summary>The timer only runs while something failed; in normal operation everything is event driven.</summary>
+        /// <summary>
+        /// The timer only runs while something failed; in normal operation everything is event driven.
+        /// The delay doubles with every failure (3 s, 6 s, 12 s, ... up to 60 s).
+        /// </summary>
         private void ScheduleRetry(bool failed)
         {
+            consecutiveFailures = failed ? consecutiveFailures + 1 : 0;
             if (Volatile.Read(ref disposeCalled) != 0)
                 return;
 
             try
             {
-                retryTimer.Change(failed ? retryInterval : Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+                retryTimer.Change(failed ? RetryDelay(consecutiveFailures) : Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             }
             catch (ObjectDisposedException)
             {
                 // Disposed concurrently.
             }
+        }
+
+        private TimeSpan RetryDelay(int failures) => RetryDelay(retryInterval, failures);
+
+        /// <summary>interval * 2^(failures - 1), capped at <see cref="MaxRetryInterval"/> (or the interval if larger).</summary>
+        internal static TimeSpan RetryDelay(TimeSpan interval, int failures)
+        {
+            var max = interval > MaxRetryInterval ? interval : MaxRetryInterval;
+            var ticks = interval.Ticks * Math.Pow(2, Math.Max(0, Math.Min(failures - 1, 16)));
+            return ticks >= max.Ticks ? max : TimeSpan.FromTicks((long)ticks);
         }
 
         private void UpdateApps(IReadOnlyList<IAudioSession> sessions)

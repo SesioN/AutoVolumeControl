@@ -45,6 +45,8 @@ namespace AutoVolumeControl
                 Trace.WriteLine($"Refreshing apps failed: {ex.GetBaseException().Message}");
             }
             Generate();
+            // WinForms pre-cancels opening a menu that had no items when the click arrived.
+            e.Cancel = false;
         }
 
         /// <summary>Rebuilds the menu if anything it shows has changed.</summary>

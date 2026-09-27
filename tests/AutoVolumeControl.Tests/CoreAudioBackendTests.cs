@@ -285,7 +285,11 @@ namespace AutoVolumeControl.Tests
                 player.Kill();
 
                 Assert.True(WaitFor(() => Volatile.Read(ref changes) > 0, Timeout), "No notification when the app closed.");
-                Assert.DoesNotContain(player.Name, SessionNames(audioThread, backend));
+                // The first notification may be the stream closing, just before the process is gone; the
+                // process exit notification follows. GetSessions only re-reads the list after such a
+                // notification, so the app disappearing here proves the events alone keep the list current.
+                Assert.True(WaitFor(() => !SessionNames(audioThread, backend).Contains(player.Name), Timeout),
+                    "The closed app is still listed.");
             }
             finally
             {

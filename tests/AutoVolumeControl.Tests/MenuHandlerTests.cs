@@ -45,10 +45,16 @@ namespace AutoVolumeControl.Tests
             return strip.Items.OfType<ToolStripControlHost>().Select(h => h.Control).OfType<MaterialButton>().Single();
         }
 
-        private static void RaiseOpening(ContextMenuStrip strip)
+        /// <summary>
+        /// Raises Opening like WinForms does: when the menu has no items at the time of the click,
+        /// the event arrives already cancelled.
+        /// </summary>
+        private static CancelEventArgs RaiseOpening(ContextMenuStrip strip)
         {
+            var args = new CancelEventArgs(strip.Items.Count == 0);
             var onOpening = typeof(ToolStripDropDown).GetMethod("OnOpening", BindingFlags.Instance | BindingFlags.NonPublic);
-            onOpening.Invoke(strip, new object[] { new CancelEventArgs() });
+            onOpening.Invoke(strip, new object[] { args });
+            return args;
         }
 
         [Fact]
@@ -255,6 +261,38 @@ namespace AutoVolumeControl.Tests
                 FindExitButton(strip).PerformClick();
 
                 Assert.Equal(1, exits);
+            });
+        }
+
+        [Fact]
+        public void FirstOpening_OfAnEmptyMenu_IsNotCancelled()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                CreateMenu(strip);
+                Assert.Empty(strip.Items.Cast<ToolStripItem>());
+
+                var args = RaiseOpening(strip);
+
+                Assert.False(args.Cancel);
+                Assert.NotEmpty(strip.Items.Cast<ToolStripItem>());
+            });
+        }
+
+        [Fact]
+        public void EmptyMenu_OpensOnTheFirstClickForReal()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                CreateMenu(strip);
+
+                strip.Show(0, 0);
+                bool visible = strip.Visible;
+                strip.Close();
+
+                Assert.True(visible);
             });
         }
 
