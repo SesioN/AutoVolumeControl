@@ -36,6 +36,7 @@ flowchart LR
 | Class | Responsibility |
 |---|---|
 | `Program` | Entry point; ensures a single instance, logs unhandled exceptions and runs `VolumeControl`. |
+| `CompatLayer` | Restarts the app once without DPI compatibility layers inherited from the launcher. |
 | `SingleInstance` | Named mutex so two instances never sync against each other. |
 | `VolumeControl` | `ApplicationContext`: owns the tray icon, context menu, settings and the service. Marshals `Apps.AppsUpdated` to the UI thread. |
 | `MenuHandler` | Builds the tray menu (one checkbox per app, "Start with Windows", Exit). Rebuilds only when the content changed and disposes the old items. |
@@ -105,6 +106,10 @@ rebuilds when it differs.
 
 - The process is **system DPI aware** (`app.manifest`): WinForms and MaterialSkin render the menu natively at
   the system scaling (e.g. 144 DPI at 150 %) instead of being bitmap-stretched by Windows.
+- Windows passes compatibility settings to child processes via the `__COMPAT_LAYER` environment variable. A
+  launcher with "Override high DPI scaling: System (Enhanced)" (e.g. a file manager) would force the app to be
+  DPI unaware (`DPIUNAWARE GDIDPISCALING`), making the menu large and blurry. `CompatLayer` detects these
+  inherited layers and restarts the app once without them; other layers are kept.
 - The tray icon is loaded in `SystemInformation.SmallIconSize` (24x24 at 150 %) from the multi-size `icon.ico`,
   so Windows does not downscale a larger image.
 - Limitation: on a monitor whose scaling differs from the primary monitor, Windows scales the menu of a system

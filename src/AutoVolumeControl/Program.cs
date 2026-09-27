@@ -10,6 +10,9 @@ namespace AutoVolumeControl
         [STAThread]
         static void Main()
         {
+            if (CompatLayer.RelaunchWithoutDpiLayers())
+                return;
+
             using var instance = SingleInstance.Acquire();
             if (!instance.IsFirstInstance)
                 return;
