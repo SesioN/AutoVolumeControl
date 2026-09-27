@@ -156,7 +156,7 @@ namespace AutoVolumeControl
             catch (Exception ex)
             {
                 Trace.WriteLine($"Attaching to the default playback device failed: {ex.Message}");
-                apps.Update(Enumerable.Empty<string>());
+                apps.Update(Enumerable.Empty<AppInfo>());
                 return ex;
             }
         }
@@ -236,16 +236,17 @@ namespace AutoVolumeControl
 
         private void UpdateApps(IReadOnlyList<IAudioSession> sessions)
         {
-            var names = sessions
+            // One entry per name, with the first executable found among its sessions.
+            var current = sessions
                 .Where(s => !s.IsSystemSound && !string.IsNullOrEmpty(s.Name))
-                .Select(s => s.Name)
-                .Distinct()
+                .GroupBy(s => s.Name)
+                .Select(g => new AppInfo(g.Key, g.Select(s => s.ExecutablePath).FirstOrDefault(p => !string.IsNullOrEmpty(p))))
                 .ToList();
 
-            foreach (var name in names)
-                preferences.Register(name);
+            foreach (var app in current)
+                preferences.Register(app.Name);
 
-            apps.Update(names);
+            apps.Update(current);
         }
 
         private static void DisposeAll(IReadOnlyList<IAudioSession> sessions)

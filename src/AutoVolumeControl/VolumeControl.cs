@@ -22,6 +22,7 @@ namespace AutoVolumeControl
         private readonly AutoVolumeService service;
         private readonly Control uiControl;
         private readonly MenuHandler menuHandler;
+        private readonly AppIconCache icons;
         private bool disposed;
 
         public VolumeControl()
@@ -48,7 +49,8 @@ namespace AutoVolumeControl
             };
 
             service = new AutoVolumeService(backend, preferences, apps, retryInterval);
-            menuHandler = new MenuHandler(contextMenuStrip, preferences, apps, autoStart, service.RefreshAsync);
+            icons = new AppIconCache();
+            menuHandler = new MenuHandler(contextMenuStrip, preferences, apps, autoStart, service.RefreshAsync, icons);
             // Exit from the button's click handler would dispose the menu while it is still processing the click.
             menuHandler.ExitRequested += (sender, e) => RunOnUiThread(() => Exit(sender, e));
             apps.AppsUpdated += OnAppsUpdated;
@@ -131,6 +133,8 @@ namespace AutoVolumeControl
                 notifyIcon.Dispose();
                 icon?.Dispose();
                 contextMenuStrip.Dispose();
+                // After the menu: its picture boxes show the cached icons.
+                icons.Dispose();
                 appSettings.Dispose();
                 uiControl.Dispose();
             }

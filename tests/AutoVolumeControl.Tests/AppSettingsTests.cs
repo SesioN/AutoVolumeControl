@@ -73,5 +73,24 @@ namespace AutoVolumeControl.Tests
 
             Assert.True(settings.Exists("app0"));
         }
+
+        [Fact]
+        public void SubStore_IsASubkeyAndDoesNotClashWithValues()
+        {
+            using (var settings = new AppSettings(key.Path))
+            {
+                settings.Set("Ratios", "True");
+                var ratios = settings.GetSubStore("Ratios");
+                ratios.Set("chrome", "70");
+
+                Assert.Equal("True", settings.Get("Ratios"));
+                Assert.Null(settings.Get("chrome"));
+                Assert.Equal("70", ratios.Get("chrome"));
+                Assert.Same(ratios, settings.GetSubStore("Ratios"));
+            }
+
+            using var reopened = Registry.CurrentUser.OpenSubKey(key.Path + @"\Ratios", false);
+            Assert.Equal("70", reopened.GetValue("chrome"));
+        }
     }
 }

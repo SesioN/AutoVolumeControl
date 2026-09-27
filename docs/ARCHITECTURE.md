@@ -12,6 +12,7 @@ flowchart LR
         Program --> VolumeControl
         VolumeControl --> MenuHandler
         VolumeControl --> NotifyIcon
+        MenuHandler --> AppIconCache
     end
 
     subgraph audio["Audio thread (MTA)"]
@@ -26,7 +27,7 @@ flowchart LR
     AutoVolumeService --> AppPreferences
     MenuHandler --> AppPreferences
     MenuHandler --> AutoStart
-    AppPreferences --> AppSettings[("HKCU\SOFTWARE\AutoVolumeControl")]
+    AppPreferences --> AppSettings[("HKCU\SOFTWARE\AutoVolumeControl (+ \Ratios)")]
     AutoStart --> RunKey[("HKCU\...\CurrentVersion\Run")]
     CoreAudioBackend -. events .-> AutoVolumeService
 ```
@@ -39,20 +40,22 @@ flowchart LR
 | `CompatLayer` | Restarts the app once without DPI compatibility layers inherited from the launcher. |
 | `SingleInstance` | Named mutex so two instances never sync against each other. |
 | `VolumeControl` | `ApplicationContext`: owns the tray icon, context menu, settings and the service. Marshals `Apps.AppsUpdated` to the UI thread. |
-| `MenuHandler` | Builds the tray menu (one checkbox per app, "Start with Windows", Exit). Rebuilds only when the content changed and disposes the old items. |
+| `MenuHandler` | Builds the tray menu (one row per app: checkbox, icon, name and ratio slider; "Start with Windows"; Exit). Rebuilds only when the content changed, disposes the old items and waits while a mouse button is held down on the open menu. |
+| `AppIconCache` | UI thread only. One bitmap per app name in `SystemInformation.SmallIconSize`, read from the executable via the shell (`SHGetFileInfo`), else the generic application icon. Drops icons of apps that are no longer shown; disposed by `VolumeControl`. |
 | `AutoVolumeService` | Orchestrates everything audio related on the `AudioThread`: attach to the device, list apps, sync volumes, react to events. |
 | `AudioThread` | One long-lived MTA thread with a work queue. All COM objects are created, used and released there. |
 | `IAudioBackend` / `CoreAudioBackend` | Access to the default playback device via the Windows Core Audio API. Keeps one `SessionWatch` per running app session that caches its name and volume interface and forwards its events; the session list is only re-read after an event that can change it. |
-| `VolumeSynchronizer` | Writes master volume + mute to every enabled session where it differs; a failing session does not stop the others. |
+| `VolumeSynchronizer` | Writes master volume × the app's ratio, and the master mute state, to every enabled session where it differs; a failing session does not stop the others. |
 | `CoreAudioInterop` | The Core Audio COM interfaces used (from the Windows SDK headers `mmdeviceapi.h`, `endpointvolume.h`, `audiopolicy.h`). |
 | `SessionFilter` | Decides which sessions belong to running apps (not expired, process alive, process ID not reused). |
 | `AudioEventRules` | Which default-device changes and session disconnect reasons require a re-attach. |
 | `CorrectionThrottle` | Pauses corrections for an app that keeps resetting its own volume, so the two apps cannot fight in a loop. |
 | `LogFile` | Timestamped `Trace` log in `%LOCALAPPDATA%\AutoVolumeControl` (rotated at 1 MB). |
-| `SessionNameResolver` | Single source of truth for an app's name (process name, else exe name from the session identifier, else display name, else identifier). |
-| `Apps` | Thread-safe list of apps that currently have a session; raises `AppsUpdated` on change. |
-| `AppPreferences` | Per-app enabled flag on top of `ISettingsStore`; new apps default to enabled, invalid values are tolerated. |
-| `AppSettings` | `ISettingsStore` backed by `HKCU\SOFTWARE\<ProductName>` (string values). |
+| `SessionNameResolver` | Single source of truth for an app's name (process name, else exe name from the session identifier, else display name, else identifier). Also turns the NT device path in a session identifier into a drive path. |
+| `ExecutableLocator` | Finds an app's executable for its icon: `QueryFullProcessImageName` with `PROCESS_QUERY_LIMITED_INFORMATION` (works for most processes, including many elevated ones), else the path in the session identifier (device prefix mapped with `QueryDosDevice`), else the session's icon path. |
+| `Apps` | Thread-safe list of apps (`AppInfo`: name and executable, unique by name) that currently have a session; raises `AppsUpdated` on change, including when an app's executable becomes known. |
+| `AppPreferences` | Per-app enabled flag and volume ratio on top of `ISettingsStore`; new apps default to enabled and 100 %, invalid values are tolerated. |
+| `AppSettings` | `ISettingsStore` backed by `HKCU\SOFTWARE\<ProductName>` (string values), with sub-stores in subkeys. |
 | `AutoStart` | "Start with Windows" entry in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (quoted path). |
 
 ## Threading model
@@ -74,11 +77,12 @@ All audio work is one **reconcile** step on the audio thread:
 2. read the master volume and the sessions of running apps (expired sessions and sessions of exited
    processes are left out). The sessions are cached; they are only re-read from Windows after an event that
    can change the list, so a master volume change costs one read plus the necessary writes;
-3. update `Apps` and register new apps (enabled by default);
-4. write volume/mute of enabled apps **only where they differ** from the master (tolerance 0.001). If an app
+3. update `Apps` (with the first known executable per app name) and register new apps (enabled by default);
+4. write volume/mute of enabled apps **only where they differ** from the target, master volume × the app's ratio
+   (tolerance 0.001). If an app
    keeps resetting its own volume to something else while the master stays the same, corrections for that session
-   pause for 60 s after 10 corrections within 10 s (`CorrectionThrottle`). A master change ends the pause and is
-   always applied; when a pause ends without any event, the timer triggers the correction.
+   pause for 60 s after 10 corrections within 10 s (`CorrectionThrottle`). A master or ratio change ends the pause
+   and is always applied; when a pause ends without any event, the timer triggers the correction.
 
 `RequestSync()` merges requests: at most one reconcile is queued, and it reads the master volume when it
 runs, so a burst of notifications always ends on the latest value.
@@ -95,6 +99,7 @@ runs, so a burst of notifications always ends on the latest value.
 | Session disconnected (device removed, audio service shut down) | `IAudioSessionEvents` (app sessions and the system sounds session) | re-attach + reconcile |
 | Default device changed | `IMMNotificationClient` | re-attach + reconcile |
 | App enabled/disabled in the menu | `AppPreferences.Changed` | reconcile (enabled app synced immediately) |
+| Ratio slider moved | `AppPreferences.Changed` (only when the percent value changed) | reconcile; while dragging, requests are merged, so the app follows the slider live |
 | Menu opened | `ContextMenuStrip.Opening` | session list re-read from Windows + reconcile (waits at most 500 ms), then `Generate()` |
 
 ### Failure and recovery
@@ -112,14 +117,26 @@ runs, so a burst of notifications always ends on the latest value.
   ready a few seconds later).
 
 ### Menu
-`Generate()` compares a description of the content (apps, their flags, autostart) with the last rendered
-one and only rebuilds when it differs; replaced items are disposed.
+`Generate()` compares a description of the content (apps, their flags and ratios, whether an icon is known,
+autostart) with the last rendered one and only rebuilds when it differs; replaced items are disposed. Changes
+made in the menu itself (checkbox, slider) update that description, so they never cause a rebuild.
+
+Rows: `[checkbox] [icon] name  [slider 0–100 %]`. Clicking the icon or the name toggles the checkbox; the slider is
+disabled while the app is unchecked. The slider (`MaterialSlider`) raises `onValueChanged` for every step while
+dragging; each step is stored (only if the percent value changed) and the service merges the resulting sync
+requests.
+
+While a mouse button is held down on the open menu, a rebuild (e.g. because an app started or exited) is
+deferred, so a slider being dragged is not destroyed. It runs after the next mouse-up in the menu (posted, not
+from within the handler), or when the menu opens next; opening always builds. While a slider is dragged, the menu
+also refuses to close because of a click or focus change outside it.
 
 ## Persistence
 
 | Location | Content |
 |---|---|
 | `HKCU\SOFTWARE\AutoVolumeControl\<app>` | `"True"` / `"False"` – whether the app is synced. Written as `"True"` when an app is seen for the first time. |
+| `HKCU\SOFTWARE\AutoVolumeControl\Ratios\<app>` | Integer percent `"0"`–`"100"` (culture invariant) – the app's share of the master volume. Missing or unreadable means 100 %, out of range is clamped. A subkey, so it cannot clash with the flags. Written only when the slider is moved. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\AutoVolumeControl` | `"<path to exe>"` when autostart is enabled. |
 
 ## Build & packaging
@@ -161,11 +178,15 @@ one and only rebuilds when it differs; replaced items are disposed.
 ## Manual tests
 
 The automated tests cover the notification plumbing against the real audio stack, but two triggers cannot be
-produced without changing the machine's configuration, so they are checked by hand:
+produced without changing the machine's configuration, and the look and mouse handling of the menu depend on the
+display, so these are checked by hand:
 
 1. **Default device change:** switch the default playback device (e.g. speakers ↔ headset) while an app plays
    audio. The menu shows the apps of the new device and they follow its master volume.
-2. **Audio service restart:** as administrator run `net stop audiosrv && net start audiosrv` while the app runs.
+2. **Menu at 100 % and 150 % display scaling:** icons are sharp and as large as the tray icon, rows are aligned,
+   dragging a slider changes the app's volume live, also when the pointer leaves the menu while dragging, and
+   starting or closing an app while dragging does not interrupt the drag (the menu updates after releasing).
+3. **Audio service restart:** as administrator run `net stop audiosrv && net start audiosrv` while the app runs.
    Within a few seconds after the service is back the apps are listed and synced again; the log shows the
    re-attach.
 
@@ -179,8 +200,9 @@ produced without changing the machine's configuration, so they are checked by ha
 
 ## Notes
 
-- Windows multiplies session volume with the endpoint volume. Setting an app to the master
-  scalar therefore results in an effective level of `master²` (e.g. 50 % → 25 %). This is the
-  behaviour the app has always had; it is documented here so it is a conscious choice.
+- Windows multiplies session volume with the endpoint volume. Setting an app to master × ratio
+  therefore results in an effective level of `master² × ratio` (e.g. master 50 %, ratio 60 % → 15 %). With the
+  default ratio of 100 % this is `master²`, the behaviour the app has always had; it is documented here so it is a
+  conscious choice.
 - Apps are identified by process name, so two different programs with the same executable name
-  share one setting.
+  share one setting (and the icon of the first one found).

@@ -3,7 +3,9 @@
 Tray application for Windows that keeps the volume and mute state of selected applications in sync
 with the master volume of the default playback device.
 
-- Right-click the tray icon to choose which apps are synced.
+- Right-click the tray icon to choose which apps are synced. Each app is shown with its icon.
+- A slider per app sets its volume as a share of the master volume (100 % by default), e.g. music at 60 %
+  of whatever the master is set to.
 - New apps are synced by default and as soon as they start playing audio.
 - Follows changes of the default playback device.
 - Optional "Start with Windows".

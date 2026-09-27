@@ -1,18 +1,28 @@
 using System;
+using System.Globalization;
 
 namespace AutoVolumeControl
 {
-    /// <summary>Per-app "sync this app with the master volume" flag. New apps are enabled by default.</summary>
+    /// <summary>
+    /// Per-app settings: the "sync this app with the master volume" flag (new apps are enabled by default) and
+    /// the ratio of the master volume the app is set to (100 % by default).
+    /// </summary>
     sealed class AppPreferences
     {
+        /// <summary>Name of the sub-store holding the ratios, so they cannot clash with the flags.</summary>
+        public const string RatiosStoreName = "Ratios";
+        public const int DefaultRatioPercent = 100;
+
         private readonly ISettingsStore store;
+        private readonly ISettingsStore ratioStore;
 
         public AppPreferences(ISettingsStore store)
         {
             this.store = store;
+            ratioStore = store.GetSubStore(RatiosStoreName);
         }
 
-        /// <summary>Raised on the calling thread after the user changed an app's flag.</summary>
+        /// <summary>Raised on the calling thread after the user changed an app's flag or ratio.</summary>
         public event EventHandler Changed;
 
         public bool IsEnabled(string appName)
@@ -37,6 +47,48 @@ namespace AutoVolumeControl
             Changed?.Invoke(this, EventArgs.Empty);
         }
 
+        /// <summary>The app's volume as a share of the master volume, 0.0 to 1.0.</summary>
+        public float GetRatio(string appName) => GetRatioPercent(appName) / 100f;
+
+        /// <summary>The app's volume in percent of the master volume, 0 to 100.</summary>
+        public int GetRatioPercent(string appName)
+        {
+            if (string.IsNullOrEmpty(appName))
+                return DefaultRatioPercent;
+
+            var value = ratioStore.Get(appName);
+            // Like the flag, a hand-edited or corrupted value is tolerated: unreadable means the default,
+            // out of range is clamped.
+            if (value == null || !int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int percent))
+                return DefaultRatioPercent;
+
+            return ClampPercent(percent);
+        }
+
+        /// <summary>Stores the ratio (0.0 to 1.0, rounded to whole percent); values outside the range are clamped.</summary>
+        public void SetRatio(string appName, float ratio)
+        {
+            if (float.IsNaN(ratio))
+                return;
+
+            SetRatioPercent(appName, (int)Math.Round(Math.Max(0f, Math.Min(1f, ratio)) * 100f, MidpointRounding.AwayFromZero));
+        }
+
+        /// <summary>Stores the ratio in percent; values outside 0 to 100 are clamped. Writes only on a change.</summary>
+        public void SetRatioPercent(string appName, int percent)
+        {
+            if (string.IsNullOrEmpty(appName))
+                return;
+
+            var value = ClampPercent(percent).ToString(CultureInfo.InvariantCulture);
+            // The slider reports every step while dragging; unchanged values cost neither a write nor a sync.
+            if (ratioStore.Get(appName) == value)
+                return;
+
+            ratioStore.Set(appName, value);
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
+
         /// <summary>Persists the default for an app that has not been seen before.</summary>
         public void Register(string appName)
         {
@@ -45,5 +97,7 @@ namespace AutoVolumeControl
 
             store.Set(appName, bool.TrueString);
         }
+
+        private static int ClampPercent(int percent) => Math.Max(0, Math.Min(100, percent));
     }
 }

@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 namespace AutoVolumeControl
 {
@@ -32,6 +34,80 @@ namespace AutoVolumeControl
         /// </summary>
         public static string ExecutableNameFromSessionIdentifier(string sessionIdentifier)
         {
+            string path = ExecutableFromSessionIdentifier(sessionIdentifier);
+            if (path == null)
+                return null;
+
+            int slash = path.LastIndexOf('\\');
+            string fileName = slash >= 0 ? path.Substring(slash + 1) : path;
+            string name = Path.GetFileNameWithoutExtension(fileName).Trim();
+            return name.Length == 0 ? null : name;
+        }
+
+        /// <summary>
+        /// Turns the executable in the session identifier into a normal path, e.g.
+        /// <c>\Device\HarddiskVolume3\Program Files\App\app.exe</c> into <c>C:\Program Files\App\app.exe</c>.
+        /// </summary>
+        /// <param name="driveDevices">Drive letters and their device names, e.g. ("C:", <c>\Device\HarddiskVolume3</c>).</param>
+        /// <returns>null if the identifier names no executable or its device has no drive letter.</returns>
+        public static string ExecutablePathFromSessionIdentifier(string sessionIdentifier, IEnumerable<KeyValuePair<string, string>> driveDevices)
+        {
+            string path = ExecutableFromSessionIdentifier(sessionIdentifier);
+            return path == null ? null : DevicePathToDosPath(path, driveDevices);
+        }
+
+        /// <summary>Replaces the device prefix of an NT path by its drive letter; drive paths are returned as they are.</summary>
+        public static string DevicePathToDosPath(string path, IEnumerable<KeyValuePair<string, string>> driveDevices)
+        {
+            if (string.IsNullOrEmpty(path))
+                return null;
+
+            if (path.Length >= 3 && char.IsLetter(path[0]) && path[1] == ':' && path[2] == '\\')
+                return path;
+
+            // Network shares: \Device\Mup\server\share\app.exe is \\server\share\app.exe.
+            const string Mup = @"\Device\Mup\";
+            if (path.StartsWith(Mup, StringComparison.OrdinalIgnoreCase))
+                return @"\\" + path.Substring(Mup.Length);
+
+            foreach (var pair in driveDevices ?? Enumerable.Empty<KeyValuePair<string, string>>())
+            {
+                var device = pair.Value?.TrimEnd('\\');
+                if (string.IsNullOrEmpty(device) || string.IsNullOrEmpty(pair.Key))
+                    continue;
+
+                // The device name must end at a separator: HarddiskVolume1 is no prefix of HarddiskVolume10.
+                if (path.Length > device.Length
+                    && path[device.Length] == '\\'
+                    && path.StartsWith(device, StringComparison.OrdinalIgnoreCase))
+                {
+                    return pair.Key + path.Substring(device.Length);
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// The file of an icon path as set with IAudioSessionControl::SetIconPath, e.g.
+        /// <c>@%SystemRoot%\System32\app.dll,-101</c> gives <c>C:\Windows\System32\app.dll</c>.
+        /// </summary>
+        public static string FileFromIconPath(string iconPath)
+        {
+            if (string.IsNullOrWhiteSpace(iconPath))
+                return null;
+
+            var path = iconPath.Trim().TrimStart('@');
+            int comma = path.LastIndexOf(',');
+            if (comma > 0 && int.TryParse(path.Substring(comma + 1).Trim(), out _))
+                path = path.Substring(0, comma);
+
+            path = Environment.ExpandEnvironmentVariables(path.Trim().Trim('"'));
+            return path.Length == 0 ? null : path;
+        }
+
+        /// <summary>The raw executable path of the identifier (possibly an NT device path), or null.</summary>
+        private static string ExecutableFromSessionIdentifier(string sessionIdentifier)
+        {
             if (string.IsNullOrEmpty(sessionIdentifier))
                 return null;
 
@@ -44,13 +120,7 @@ namespace AutoVolumeControl
             if (end >= 0)
                 path = path.Substring(0, end);
 
-            if (!path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                return null;
-
-            int slash = path.LastIndexOf('\\');
-            string fileName = slash >= 0 ? path.Substring(slash + 1) : path;
-            string name = Path.GetFileNameWithoutExtension(fileName).Trim();
-            return name.Length == 0 ? null : name;
+            return path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? path : null;
         }
     }
 }

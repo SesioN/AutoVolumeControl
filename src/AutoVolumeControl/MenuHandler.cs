@@ -20,19 +20,33 @@ namespace AutoVolumeControl
         private readonly Apps apps;
         private readonly AutoStart autoStart;
         private readonly Func<Task> refreshApps;
+        private readonly AppIconCache icons;
+        private readonly Func<bool> isMouseButtonDown;
+        private List<AppInfo> renderedApps = new List<AppInfo>();
         private string renderedState;
+        private bool rebuildDeferred;
+        private bool draggingSlider;
 
         public event EventHandler ExitRequested;
 
-        public MenuHandler(ContextMenuStrip contextMenuStrip, AppPreferences preferences, Apps apps, AutoStart autoStart, Func<Task> refreshApps)
+        /// <param name="icons">Owned by the caller, which disposes it after the menu.</param>
+        /// <param name="isMouseButtonDown">For tests; null reads <see cref="Control.MouseButtons"/>.</param>
+        public MenuHandler(ContextMenuStrip contextMenuStrip, AppPreferences preferences, Apps apps, AutoStart autoStart, Func<Task> refreshApps, AppIconCache icons, Func<bool> isMouseButtonDown = null)
         {
             this.contextMenuStrip = contextMenuStrip;
             this.preferences = preferences;
             this.apps = apps;
             this.autoStart = autoStart;
             this.refreshApps = refreshApps;
+            this.icons = icons;
+            this.isMouseButtonDown = isMouseButtonDown ?? (() => Control.MouseButtons != MouseButtons.None);
             this.contextMenuStrip.Opening += ContextMenuStrip_Opening;
+            this.contextMenuStrip.Closing += ContextMenuStrip_Closing;
+            this.contextMenuStrip.MouseUp += OnMouseUpInMenu;
         }
+
+        /// <summary>True while a rebuild waits for the mouse button to be released.</summary>
+        internal bool RebuildDeferred => rebuildDeferred;
 
         private void ContextMenuStrip_Opening(object sender, System.ComponentModel.CancelEventArgs e)
         {
@@ -44,19 +58,34 @@ namespace AutoVolumeControl
             {
                 Trace.WriteLine($"Refreshing apps failed: {ex.GetBaseException().Message}");
             }
-            Generate();
+            Generate(deferWhileMouseDown: false);
             // WinForms pre-cancels opening a menu that had no items when the click arrived.
             e.Cancel = false;
         }
 
-        /// <summary>Rebuilds the menu if anything it shows has changed.</summary>
+        /// <summary>
+        /// Rebuilds the menu if anything it shows has changed. While a mouse button is held down on the open menu
+        /// (e.g. while dragging a slider) the rebuild waits until it is released, so the control under the mouse
+        /// is not destroyed.
+        /// </summary>
         /// <returns>true if the menu was rebuilt.</returns>
-        public bool Generate()
+        public bool Generate() => Generate(deferWhileMouseDown: true);
+
+        private bool Generate(bool deferWhileMouseDown)
         {
             var appList = apps.GetApps();
             var state = DescribeState(appList);
             if (state == renderedState)
+            {
+                rebuildDeferred = false;
                 return false;
+            }
+
+            if (deferWhileMouseDown && contextMenuStrip.Visible && isMouseButtonDown())
+            {
+                rebuildDeferred = true;
+                return false;
+            }
 
             ClearItems();
             AddHeader();
@@ -65,15 +94,62 @@ namespace AutoVolumeControl
             AddAutoRunItem();
             AddSeparator();
             AddExitItem();
+            foreach (var host in contextMenuStrip.Items.OfType<ToolStripControlHost>())
+                WatchMouseUp(host.Control);
+            icons.Retain(appList.Select(a => a.Name));
 
+            renderedApps = appList;
             renderedState = state;
+            rebuildDeferred = false;
+            draggingSlider = false;
             return true;
         }
 
-        private string DescribeState(List<string> appList)
+        private string DescribeState(List<AppInfo> appList)
         {
-            var appStates = appList.Select(a => $"{a}={preferences.IsEnabled(a)}");
+            var appStates = appList.Select(a =>
+                $"{a.Name}={preferences.IsEnabled(a.Name)};ratio={preferences.GetRatioPercent(a.Name)};icon={a.ExecutablePath != null}");
             return string.Join("\n", appStates) + $"\nautostart={autoStart.IsEnabled}";
+        }
+
+        /// <summary>A change made in the menu itself is already shown; it must not cause a rebuild.</summary>
+        private void OnChangedInMenu()
+        {
+            renderedState = DescribeState(renderedApps);
+        }
+
+        private void OnMouseUpInMenu(object sender, MouseEventArgs e)
+        {
+            draggingSlider = false;
+            if (!rebuildDeferred || !contextMenuStrip.IsHandleCreated)
+                return;
+
+            // Not from within the handler: the rebuild disposes the control that raised the event.
+            contextMenuStrip.BeginInvoke((Action)(() =>
+            {
+                if (rebuildDeferred && !contextMenuStrip.IsDisposed)
+                    Generate();
+            }));
+        }
+
+        /// <summary>
+        /// Keeps the menu open while a slider is dragged and the pointer leaves the menu; the slider holds the mouse
+        /// capture then, and a menu closing under it would end the drag.
+        /// </summary>
+        private void ContextMenuStrip_Closing(object sender, ToolStripDropDownClosingEventArgs e)
+        {
+            bool closedByPointer = e.CloseReason == ToolStripDropDownCloseReason.AppClicked
+                || e.CloseReason == ToolStripDropDownCloseReason.AppFocusChange;
+            if (closedByPointer && draggingSlider && isMouseButtonDown())
+                e.Cancel = true;
+        }
+
+        /// <summary>Hosted controls report mouse-ups to themselves only; every one of them ends a deferral.</summary>
+        private void WatchMouseUp(Control control)
+        {
+            control.MouseUp += OnMouseUpInMenu;
+            foreach (Control child in control.Controls)
+                WatchMouseUp(child);
         }
 
         /// <summary>Items.Clear() does not dispose the removed items; their window handles would leak.</summary>
@@ -104,45 +180,117 @@ namespace AutoVolumeControl
             AddSeparator();
         }
 
-        private void AddAppItems(List<string> appList)
+        private void AddAppItems(List<AppInfo> appList)
         {
             if (appList.Count == 0)
                 return;
 
-            var panel = new FlowLayoutPanel
+            var table = new TableLayoutPanel
             {
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                FlowDirection = FlowDirection.TopDown,
-                WrapContents = true,
+                ColumnCount = 4,
+                RowCount = appList.Count,
                 Padding = new Padding(0, 10, 0, 10),
+                BackColor = Color.Transparent,
             };
+            for (int column = 0; column < table.ColumnCount; column++)
+                table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-            foreach (var appName in appList)
+            for (int row = 0; row < appList.Count; row++)
             {
-                panel.Controls.Add(CreateAppCheckBox(appName));
+                table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                AddAppRow(table, row, appList[row]);
             }
 
-            var host = new ToolStripControlHost(panel)
+            var host = new ToolStripControlHost(table)
             {
                 AutoSize = true,
+                BackColor = Color.Transparent,
             };
 
             contextMenuStrip.Items.Add(host);
         }
 
-        private MaterialCheckbox CreateAppCheckBox(string appName)
+        /// <summary>One row: checkbox, icon, name and the slider for the app's share of the master volume.</summary>
+        private void AddAppRow(TableLayoutPanel table, int row, AppInfo app)
         {
+            var appName = app.Name;
+            bool enabled = preferences.IsEnabled(appName);
+
             var checkbox = new MaterialCheckbox
             {
-                Text = $"App: {appName}",
+                Text = string.Empty,
                 Name = appName,
-                Checked = preferences.IsEnabled(appName),
-                AutoSize = true
+                Checked = enabled,
+                AutoSize = true,
+                Anchor = AnchorStyles.Left,
             };
-            checkbox.CheckedChanged += (sender, e) => preferences.SetEnabled(appName, checkbox.Checked);
-            return checkbox;
+
+            var icon = new PictureBox
+            {
+                Name = IconName(appName),
+                Image = icons.GetIcon(app),
+                Size = icons.IconSize,
+                SizeMode = PictureBoxSizeMode.CenterImage,
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(0, 0, 8, 0),
+                BackColor = Color.Transparent,
+            };
+
+            var label = new MaterialLabel
+            {
+                Name = LabelName(appName),
+                Text = appName,
+                AutoSize = true,
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(0, 0, 12, 0),
+            };
+
+            var slider = new MaterialSlider
+            {
+                Name = SliderName(appName),
+                ShowText = false,
+                Text = string.Empty,
+                ShowValue = true,
+                ValueSuffix = "%",
+                RangeMin = 0,
+                RangeMax = 100,
+                Width = 180,
+                Anchor = AnchorStyles.Left,
+                Enabled = enabled,
+            };
+            slider.Value = preferences.GetRatioPercent(appName);
+
+            checkbox.CheckedChanged += (sender, e) =>
+            {
+                preferences.SetEnabled(appName, checkbox.Checked);
+                slider.Enabled = checkbox.Checked;
+                OnChangedInMenu();
+            };
+            // The row reads as one item: clicking the icon or the name toggles the app too.
+            icon.Click += (sender, e) => checkbox.Checked = !checkbox.Checked;
+            label.Click += (sender, e) => checkbox.Checked = !checkbox.Checked;
+            // Raised for every step while dragging, so the app's volume follows the slider live. Unchanged values
+            // are not written, and the service merges the resulting sync requests.
+            slider.onValueChanged += (sender, value) =>
+            {
+                preferences.SetRatioPercent(appName, value);
+                OnChangedInMenu();
+            };
+            slider.MouseDown += (sender, e) => draggingSlider = true;
+
+            table.Controls.Add(checkbox, 0, row);
+            table.Controls.Add(icon, 1, row);
+            table.Controls.Add(label, 2, row);
+            table.Controls.Add(slider, 3, row);
         }
+
+        internal static string IconName(string appName) => "icon:" + appName;
+
+        internal static string LabelName(string appName) => "name:" + appName;
+
+        internal static string SliderName(string appName) => "ratio:" + appName;
 
         private void AddAutoRunItem()
         {

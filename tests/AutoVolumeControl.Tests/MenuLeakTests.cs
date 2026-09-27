@@ -32,11 +32,16 @@ namespace AutoVolumeControl.Tests
                 const uint GdiObjects = 0, UserObjects = 1;
                 var process = System.Diagnostics.Process.GetCurrentProcess().Handle;
                 using var strip = new ContextMenuStrip();
-                var menu = new MenuHandler(strip, preferences, apps, autoStart, () => System.Threading.Tasks.Task.CompletedTask);
+                using var icons = new AppIconCache();
+                var menu = new MenuHandler(strip, preferences, apps, autoStart, () => System.Threading.Tasks.Task.CompletedTask, icons);
+                // Real executables, so real icons are extracted (and must be released when their app goes away).
+                var exe = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                var notepad = System.IO.Path.Combine(Environment.SystemDirectory, "notepad.exe");
 
                 void RebuildWithHandles(int i)
                 {
-                    apps.Update(new[] { $"app{i % 2}", "chrome" });
+                    // A new name every time: each rebuild extracts a new icon and drops the previous one.
+                    apps.Update(new[] { new AppInfo($"app{i}", i % 2 == 0 ? notepad : exe), new AppInfo("chrome", notepad), new AppInfo("unknown") });
                     menu.Generate();
                     // Hosted controls only allocate window handles once created, as when the menu is shown.
                     foreach (var host in strip.Items.OfType<ToolStripControlHost>())
@@ -59,6 +64,7 @@ namespace AutoVolumeControl.Tests
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
 
+                Assert.Equal(3, icons.CachedCount);
                 // Without disposing the old items this grew by several handles per rebuild (> 1000 here).
                 Assert.InRange((int)GetGuiResources(process, UserObjects) - (int)user, -50, 50);
                 Assert.InRange((int)GetGuiResources(process, GdiObjects) - (int)gdi, -50, 50);

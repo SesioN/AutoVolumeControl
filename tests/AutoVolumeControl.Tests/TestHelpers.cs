@@ -58,6 +58,18 @@ namespace AutoVolumeControl.Tests
         public void Set(string name, string value) => Values[name] = value;
 
         public bool Exists(string name) => Values.ContainsKey(name);
+
+        public Dictionary<string, InMemorySettingsStore> SubStores { get; } = new Dictionary<string, InMemorySettingsStore>();
+
+        public ISettingsStore GetSubStore(string name)
+        {
+            if (!SubStores.TryGetValue(name, out var subStore))
+                SubStores[name] = subStore = new InMemorySettingsStore();
+            return subStore;
+        }
+
+        /// <summary>The per-app ratios (percent) of <see cref="AppPreferences"/>.</summary>
+        public Dictionary<string, string> Ratios => ((InMemorySettingsStore)GetSubStore(AppPreferences.RatiosStoreName)).Values;
     }
 
     sealed class FakeSession : IAudioSession
@@ -65,10 +77,11 @@ namespace AutoVolumeControl.Tests
         private float volume;
         private bool muted;
 
-        public FakeSession(string name, bool isSystemSound = false, float volume = 1f, bool muted = false, string id = null)
+        public FakeSession(string name, bool isSystemSound = false, float volume = 1f, bool muted = false, string id = null, string executablePath = null)
         {
             Id = id ?? Guid.NewGuid().ToString("N");
             Name = name;
+            ExecutablePath = executablePath;
             IsSystemSound = isSystemSound;
             this.volume = volume;
             this.muted = muted;
@@ -76,6 +89,7 @@ namespace AutoVolumeControl.Tests
 
         public string Id { get; }
         public string Name { get; }
+        public string ExecutablePath { get; }
         public bool IsSystemSound { get; }
         public bool ThrowOnWrite { get; set; }
         public int VolumeWrites { get; private set; }

@@ -9,7 +9,7 @@ namespace AutoVolumeControl.Tests
         [Fact]
         public void StartsEmpty()
         {
-            Assert.Empty(new Apps().GetApps());
+            Assert.Empty(new Apps().GetAppNames());
         }
 
         [Fact]
@@ -21,7 +21,7 @@ namespace AutoVolumeControl.Tests
 
             Assert.True(apps.Update(new[] { "chrome", "spotify" }));
 
-            Assert.Equal(new[] { "chrome", "spotify" }, apps.GetApps());
+            Assert.Equal(new[] { "chrome", "spotify" }, apps.GetAppNames());
             Assert.Equal(1, raised);
         }
 
@@ -44,7 +44,7 @@ namespace AutoVolumeControl.Tests
             apps.Update(new[] { "chrome", "spotify" });
 
             Assert.True(apps.Update(new[] { "spotify" }));
-            Assert.Equal(new[] { "spotify" }, apps.GetApps());
+            Assert.Equal(new[] { "spotify" }, apps.GetAppNames());
         }
 
         [Fact]
@@ -54,7 +54,7 @@ namespace AutoVolumeControl.Tests
             apps.Update(new[] { "b", "a" });
             apps.Update(new[] { "c", "a", "b" });
 
-            Assert.Equal(new[] { "b", "a", "c" }, apps.GetApps());
+            Assert.Equal(new[] { "b", "a", "c" }, apps.GetAppNames());
         }
 
         [Fact]
@@ -63,7 +63,7 @@ namespace AutoVolumeControl.Tests
             var apps = new Apps();
             apps.Update(new[] { "a", null, "", "a" });
 
-            Assert.Equal(new[] { "a" }, apps.GetApps());
+            Assert.Equal(new[] { "a" }, apps.GetAppNames());
         }
 
         [Fact]
@@ -73,7 +73,7 @@ namespace AutoVolumeControl.Tests
             apps.Update(new[] { "a" });
 
             Assert.True(apps.Update(Enumerable.Empty<string>()));
-            Assert.Empty(apps.GetApps());
+            Assert.Empty(apps.GetAppNames());
         }
 
         [Fact]
@@ -82,9 +82,9 @@ namespace AutoVolumeControl.Tests
             var apps = new Apps();
             apps.Update(new[] { "a" });
 
-            apps.GetApps().Add("b");
+            apps.GetAppNames().Add("b");
 
-            Assert.Equal(new[] { "a" }, apps.GetApps());
+            Assert.Equal(new[] { "a" }, apps.GetAppNames());
         }
 
         [Fact]
@@ -94,13 +94,65 @@ namespace AutoVolumeControl.Tests
             Parallel.For(0, 500, i =>
             {
                 apps.Update(i % 2 == 0 ? new[] { "a", "b" } : new[] { "b", "c" });
-                apps.GetApps();
+                apps.GetAppNames();
             });
 
-            var result = apps.GetApps();
+            var result = apps.GetAppNames();
             Assert.Equal(2, result.Count);
             Assert.Contains("b", result);
             Assert.Equal(result.Distinct().Count(), result.Count);
+        }
+
+        // ---- executable paths ----
+
+        [Fact]
+        public void Update_KeepsTheExecutablePath()
+        {
+            var apps = new Apps();
+            apps.Update(new[] { new AppInfo("chrome", @"C:\Chrome\chrome.exe") });
+
+            Assert.Equal(@"C:\Chrome\chrome.exe", apps.GetApps().Single().ExecutablePath);
+        }
+
+        [Fact]
+        public void Update_UsesTheFirstKnownPathOfAName()
+        {
+            var apps = new Apps();
+            apps.Update(new[] { new AppInfo("chrome"), new AppInfo("chrome", @"C:\a\chrome.exe"), new AppInfo("chrome", @"C:\b\chrome.exe") });
+
+            var chrome = Assert.Single(apps.GetApps());
+            Assert.Equal(@"C:\a\chrome.exe", chrome.ExecutablePath);
+        }
+
+        [Fact]
+        public void Update_PathArrivingLater_CountsAsChange()
+        {
+            var apps = new Apps();
+            apps.Update(new[] { new AppInfo("chrome") });
+            int raised = 0;
+            apps.AppsUpdated += (s, e) => raised++;
+
+            Assert.True(apps.Update(new[] { new AppInfo("chrome", @"C:\Chrome\chrome.exe") }));
+
+            Assert.Equal(1, raised);
+            Assert.Equal(@"C:\Chrome\chrome.exe", apps.GetApps().Single().ExecutablePath);
+        }
+
+        [Fact]
+        public void Update_KnownPathIsKept_WhenLaterSessionsHaveNoneOrAnother()
+        {
+            var apps = new Apps();
+            apps.Update(new[] { new AppInfo("chrome", @"C:\a\chrome.exe") });
+
+            Assert.False(apps.Update(new[] { new AppInfo("chrome") }));
+            Assert.False(apps.Update(new[] { new AppInfo("chrome", @"C:\b\chrome.exe") }));
+            Assert.Equal(@"C:\a\chrome.exe", apps.GetApps().Single().ExecutablePath);
+        }
+
+        [Fact]
+        public void EmptyPath_IsTreatedAsUnknown()
+        {
+            Assert.Null(new AppInfo("chrome", "").ExecutablePath);
         }
     }
 }

@@ -55,7 +55,7 @@ namespace AutoVolumeControl.Tests
             StartAttached();
 
             Assert.Equal(1, backend.AttachCount);
-            Assert.Equal(new[] { "chrome" }, apps.GetApps());
+            Assert.Equal(new[] { "chrome" }, apps.GetAppNames());
             Assert.Equal("True", store.Values["chrome"]);
             Assert.Equal(0.3f, chrome.Volume);
         }
@@ -69,7 +69,7 @@ namespace AutoVolumeControl.Tests
             var start = service.Start();
 
             Assert.Throws<AggregateException>(() => start.Wait(Timeout));
-            Assert.Empty(apps.GetApps());
+            Assert.Empty(apps.GetAppNames());
         }
 
         [Fact]
@@ -84,7 +84,7 @@ namespace AutoVolumeControl.Tests
 
             backend.AttachException = null;
 
-            WaitUntil(() => apps.GetApps().Contains("chrome"), "the retry should attach once the service is ready");
+            WaitUntil(() => apps.GetAppNames().Contains("chrome"), "the retry should attach once the service is ready");
             Assert.Equal(0.6f, chrome.Volume);
         }
 
@@ -239,7 +239,7 @@ namespace AutoVolumeControl.Tests
             backend.RaiseSessionsChanged();
             Flush();
 
-            Assert.Equal(new[] { "game" }, apps.GetApps());
+            Assert.Equal(new[] { "game" }, apps.GetAppNames());
             Assert.Equal(0.2f, game.Volume);
         }
 
@@ -253,7 +253,7 @@ namespace AutoVolumeControl.Tests
             backend.RaiseSessionsChanged();
             Flush();
 
-            Assert.Equal(new[] { "spotify" }, apps.GetApps());
+            Assert.Equal(new[] { "spotify" }, apps.GetAppNames());
         }
 
         [Fact]
@@ -395,7 +395,7 @@ namespace AutoVolumeControl.Tests
             // Right after an attach, a new one is deferred by up to one retry interval.
             WaitUntil(() => backend.AttachCount == 2, "the re-attach should run");
             Flush();
-            Assert.Equal(new[] { "discord" }, apps.GetApps());
+            Assert.Equal(new[] { "discord" }, apps.GetAppNames());
             Assert.Equal(0.8f, headset.Volume);
         }
 
@@ -407,10 +407,10 @@ namespace AutoVolumeControl.Tests
 
             backend.AttachException = new InvalidOperationException("no device");
             backend.RaiseReattachRequired();
-            WaitUntil(() => !apps.GetApps().Any(), "the failed re-attach should clear the list");
+            WaitUntil(() => !apps.GetAppNames().Any(), "the failed re-attach should clear the list");
 
             backend.AttachException = null;
-            WaitUntil(() => apps.GetApps().Contains("chrome"), "the retry should re-attach without any event");
+            WaitUntil(() => apps.GetAppNames().Contains("chrome"), "the retry should re-attach without any event");
         }
 
         [Fact]
@@ -474,7 +474,7 @@ namespace AutoVolumeControl.Tests
             backend.RaiseSessionsChanged();
             Flush();
 
-            Assert.Equal(new[] { "chrome" }, apps.GetApps());
+            Assert.Equal(new[] { "chrome" }, apps.GetAppNames());
         }
 
         // ---- menu ----
@@ -489,7 +489,7 @@ namespace AutoVolumeControl.Tests
 
             Assert.True(service.RefreshAsync().Wait(Timeout));
 
-            Assert.Equal(new[] { "chrome" }, apps.GetApps());
+            Assert.Equal(new[] { "chrome" }, apps.GetAppNames());
             Assert.Equal(0.7f, chrome.Volume);
         }
 
@@ -526,7 +526,7 @@ namespace AutoVolumeControl.Tests
             Assert.True(service.RefreshAsync().Wait(Timeout));
 
             Assert.Equal(1, backend.AttachCount);
-            Assert.Equal(new[] { "chrome" }, apps.GetApps());
+            Assert.Equal(new[] { "chrome" }, apps.GetAppNames());
         }
 
         // ---- threading and lifetime ----
@@ -569,7 +569,7 @@ namespace AutoVolumeControl.Tests
             Flush();
 
             Assert.Equal(0.33f, chrome.Volume);
-            Assert.Equal(new[] { "chrome" }, apps.GetApps());
+            Assert.Equal(new[] { "chrome" }, apps.GetAppNames());
             Assert.Single(backend.CallingThreadIds);
         }
 
@@ -639,6 +639,46 @@ namespace AutoVolumeControl.Tests
             service.RequestSync();
 
             Assert.Equal(attaches, backend.AttachCount);
+        }
+
+        // ---- ratio and executable paths ----
+
+        [Fact]
+        public void Ratio_IsAppliedEndToEnd_AndFollowsChanges()
+        {
+            var spotify = new FakeSession("spotify");
+            var chrome = new FakeSession("chrome");
+            backend.SetSessions(spotify, chrome);
+            backend.SetMaster(0.8f, false);
+            preferences.SetRatioPercent("spotify", 50);
+            StartAttached();
+
+            Assert.Equal(0.4f, spotify.Volume, 3);
+            Assert.Equal(0.8f, chrome.Volume, 3);
+
+            // Moving the slider changes the preference, which triggers a sync on its own.
+            preferences.SetRatioPercent("spotify", 25);
+            WaitUntil(() => Math.Abs(spotify.Volume - 0.2f) < 0.001f, "the new ratio is applied");
+
+            backend.SetMaster(0.4f, false);
+            backend.RaiseMasterVolumeChanged();
+            WaitUntil(() => Math.Abs(spotify.Volume - 0.1f) < 0.001f, "the ratio follows the master");
+            Assert.Equal(0.4f, chrome.Volume, 3);
+        }
+
+        [Fact]
+        public void ExecutablePaths_AreCarriedIntoTheAppList()
+        {
+            backend.SetSessions(
+                new FakeSession("chrome"),
+                new FakeSession("chrome", executablePath: @"C:\Chrome\chrome.exe"),
+                new FakeSession("spotify"));
+
+            StartAttached();
+
+            var list = apps.GetApps();
+            Assert.Equal(@"C:\Chrome\chrome.exe", list.Single(a => a.Name == "chrome").ExecutablePath);
+            Assert.Null(list.Single(a => a.Name == "spotify").ExecutablePath);
         }
     }
 }

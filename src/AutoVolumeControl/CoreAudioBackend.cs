@@ -173,8 +173,9 @@ namespace AutoVolumeControl
                         control.GetDisplayName(out var displayName);
                         var name = SessionNameResolver.Resolve(process.Name, displayName, sessionIdentifier);
                         bool isSystemSound = control.IsSystemSoundsSession() == 0;
+                        var executablePath = isSystemSound ? null : FindExecutable(control, processId, sessionIdentifier);
 
-                        var watch = new SessionWatch(this, control, id, name, isSystemSound, processId, sessionIdentifier);
+                        var watch = new SessionWatch(this, control, id, name, executablePath, isSystemSound, processId, sessionIdentifier);
                         kept = true;
                         watches.Add(id, watch);
                         seen.Add(id);
@@ -205,6 +206,24 @@ namespace AutoVolumeControl
             {
                 watches[id].Release();
                 watches.Remove(id);
+            }
+        }
+
+        /// <summary>Only used for the app's icon, so a failure just means the generic icon.</summary>
+        private static string FindExecutable(IAudioSessionControl2 control, int processId, string sessionIdentifier)
+        {
+            try
+            {
+                return ExecutableLocator.Find(processId, sessionIdentifier, () =>
+                {
+                    control.GetIconPath(out var iconPath);
+                    return iconPath;
+                });
+            }
+            catch (Exception ex) when (ex is COMException || ex is ArgumentException || ex is System.IO.IOException || ex is UnauthorizedAccessException)
+            {
+                Trace.WriteLine($"Finding the executable of process {processId} failed: {ex.Message}");
+                return null;
             }
         }
 
@@ -382,7 +401,7 @@ namespace AutoVolumeControl
             private volatile bool exited;
 
             /// <summary>Takes over the reference to <paramref name="control"/>.</summary>
-            public SessionWatch(CoreAudioBackend owner, IAudioSessionControl2 control, string id, string name, bool isSystemSound, int processId, string sessionIdentifier)
+            public SessionWatch(CoreAudioBackend owner, IAudioSessionControl2 control, string id, string name, string executablePath, bool isSystemSound, int processId, string sessionIdentifier)
             {
                 this.owner = owner;
                 this.control = control;
@@ -390,6 +409,7 @@ namespace AutoVolumeControl
                 this.sessionIdentifier = sessionIdentifier;
                 Id = id;
                 Name = name;
+                ExecutablePath = executablePath;
                 IsSystemSound = isSystemSound;
 
                 // Same COM object, other interface: no additional reference to release.
@@ -403,6 +423,8 @@ namespace AutoVolumeControl
             public string Id { get; }
 
             public string Name { get; }
+
+            public string ExecutablePath { get; }
 
             public bool IsSystemSound { get; }
 

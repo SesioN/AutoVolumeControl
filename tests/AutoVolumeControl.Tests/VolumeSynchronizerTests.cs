@@ -1,3 +1,4 @@
+using System;
 using Xunit;
 
 namespace AutoVolumeControl.Tests
@@ -132,6 +133,103 @@ namespace AutoVolumeControl.Tests
             VolumeSynchronizer.Sync(0.5f, false, new[] { chrome }, preferences);
 
             Assert.False(chrome.Muted);
+        }
+
+        // ---- ratio ----
+
+        [Fact]
+        public void Ratio_IsAppliedToTheMasterVolume()
+        {
+            store.Ratios["spotify"] = "50";
+            var spotify = new FakeSession("spotify");
+            var chrome = new FakeSession("chrome");
+
+            VolumeSynchronizer.Sync(0.8f, false, new[] { spotify, chrome }, preferences);
+
+            Assert.Equal(0.4f, spotify.Volume, 3);
+            Assert.Equal(0.8f, chrome.Volume, 3);
+        }
+
+        [Fact]
+        public void ZeroRatio_SilencesTheAppWithoutMutingIt()
+        {
+            store.Ratios["spotify"] = "0";
+            var spotify = new FakeSession("spotify");
+
+            VolumeSynchronizer.Sync(0.8f, false, new[] { spotify }, preferences);
+
+            Assert.Equal(0f, spotify.Volume);
+            Assert.False(spotify.Muted);
+        }
+
+        [Theory]
+        [InlineData("150", 0.6f)]
+        [InlineData("-20", 0f)]
+        [InlineData("garbage", 0.6f)]
+        public void InvalidStoredRatio_IsClampedOrIgnored(string stored, float expected)
+        {
+            store.Ratios["spotify"] = stored;
+            var spotify = new FakeSession("spotify");
+
+            VolumeSynchronizer.Sync(0.6f, false, new[] { spotify }, preferences);
+
+            Assert.Equal(expected, spotify.Volume, 3);
+        }
+
+        [Theory]
+        [InlineData(0.5f, 0.5f, 0.25f)]
+        [InlineData(1f, 1f, 1f)]
+        [InlineData(0.5f, 2f, 0.5f)]
+        [InlineData(0.5f, -1f, 0f)]
+        [InlineData(0.5f, float.NaN, 0.5f)]
+        public void TargetVolume_IsMasterTimesClampedRatio(float master, float ratio, float expected)
+        {
+            Assert.Equal(expected, VolumeSynchronizer.TargetVolume(master, ratio), 3);
+        }
+
+        [Fact]
+        public void MatchingRatioVolume_IsNotWrittenAgain()
+        {
+            store.Ratios["spotify"] = "50";
+            var spotify = new FakeSession("spotify", volume: 0.4f);
+
+            Assert.Equal(0, VolumeSynchronizer.Sync(0.8f, false, new[] { spotify }, preferences));
+            Assert.Equal(0, spotify.Writes);
+        }
+
+        [Fact]
+        public void ChangedRatio_IsWrittenOnTheNextSync()
+        {
+            var spotify = new FakeSession("spotify");
+            VolumeSynchronizer.Sync(0.8f, false, new[] { spotify }, preferences);
+
+            preferences.SetRatioPercent("spotify", 25);
+            VolumeSynchronizer.Sync(0.8f, false, new[] { spotify }, preferences);
+
+            Assert.Equal(0.2f, spotify.Volume, 3);
+            Assert.Equal(2, spotify.VolumeWrites);
+        }
+
+        [Fact]
+        public void ChangedRatio_EndsAThrottlePause()
+        {
+            var now = new DateTime(2026, 1, 1);
+            var throttle = new CorrectionThrottle(() => now, maxRepeatedCorrections: 2);
+            var spotify = new FakeSession("spotify", id: "s1");
+
+            // The app keeps resetting itself until its corrections are paused.
+            for (int i = 0; i < 3; i++)
+            {
+                spotify.ChangeOwnVolume(1f);
+                VolumeSynchronizer.Sync(0.5f, false, new[] { spotify }, preferences, throttle);
+            }
+            spotify.ChangeOwnVolume(1f);
+            Assert.Equal(0, VolumeSynchronizer.Sync(0.5f, false, new[] { spotify }, preferences, throttle));
+
+            preferences.SetRatioPercent("spotify", 50);
+
+            Assert.Equal(1, VolumeSynchronizer.Sync(0.5f, false, new[] { spotify }, preferences, throttle));
+            Assert.Equal(0.25f, spotify.Volume, 3);
         }
     }
 }

@@ -33,7 +33,7 @@ namespace AutoVolumeControl.Tests
         {
             return strip.Items.OfType<ToolStripControlHost>()
                 .Select(h => h.Control)
-                .OfType<FlowLayoutPanel>()
+                .OfType<TableLayoutPanel>()
                 .SelectMany(p => p.Controls.OfType<MaterialCheckbox>())
                 .Any(c => c.Name == app);
         }
