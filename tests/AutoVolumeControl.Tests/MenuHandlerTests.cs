@@ -367,7 +367,8 @@ namespace AutoVolumeControl.Tests
                 var unknown = FindControl<PictureBox>(strip, MenuHandler.IconName("unknown"));
                 Assert.NotNull(known.Image);
                 Assert.NotNull(unknown.Image);
-                Assert.Equal(System.Windows.Forms.SystemInformation.SmallIconSize, known.Image.Size);
+                var small = System.Windows.Forms.SystemInformation.SmallIconSize;
+                Assert.Equal(new System.Drawing.Size((int)Math.Round(small.Width * MenuHandler.BaseScale), (int)Math.Round(small.Height * MenuHandler.BaseScale)), known.Image.Size);
                 Assert.NotSame(known.Image, unknown.Image);
             });
         }
@@ -946,13 +947,15 @@ namespace AutoVolumeControl.Tests
                 var menu = CreateMenu(strip);
                 menu.Generate();
                 float dpi = strip.DeviceDpi / 96f;
-                Assert.Equal(dpi, menu.ScaleFactor, 3);
+                // The default of 100 % is the base size.
+                Assert.Equal(100, scale.Percent);
+                Assert.Equal(dpi * MenuHandler.BaseScale, menu.ScaleFactor, 3);
                 var before = Measure(strip);
 
                 scale.SetPercent(130);
                 Assert.True(menu.Generate());
 
-                Assert.Equal(dpi * 1.3f, menu.ScaleFactor, 3);
+                Assert.Equal(dpi * MenuHandler.BaseScale * 1.3f, menu.ScaleFactor, 3);
                 var after = Measure(strip);
                 for (int i = 0; i < before.Length; i++)
                     Assert.True(after[i] > before[i], $"Measure {i}: {after[i]} is not larger than {before[i]}");
@@ -1085,6 +1088,8 @@ namespace AutoVolumeControl.Tests
                 // Opened like from the tray: bottom right, just above the taskbar.
                 var size = strip.GetPreferredSize(System.Drawing.Size.Empty);
                 strip.Show(area.Right - size.Width, area.Bottom - size.Height);
+                // Some platforms adjust where a menu opens; put it where the tray menu is.
+                strip.Location = new System.Drawing.Point(area.Right - strip.Width, area.Bottom - strip.Height);
                 try
                 {
                     int bottom = strip.Bounds.Bottom;

@@ -143,7 +143,7 @@ slider by 5 % per notch (up = louder) and is written immediately.
 ### Menu size ("App Scale")
 Order: title, scale bar, apps, "Start with Windows", Exit (separated by lines; no empty app section).
 
-Everything in the menu is sized at 96 DPI and 100 % and multiplied by `DeviceDpi / 96 × MenuScale.Factor`: fonts,
+Everything in the menu is sized at 96 DPI and 100 % and multiplied by `DeviceDpi / 96 × BaseScale (1.3) × MenuScale.Factor` (so the default of 100 % is 1.3 times the base sizes): fonts,
 checkboxes, sliders, icons, spacing, the Exit button and so the menu itself. The scale bar below the title is a
 slider over the four sizes (labelled 85 %–130 %) between a small and a large "A" (clicking a letter moves one
 step), drawn at 80 % of the menu's size. Like the Exit button it spans the menu: both are sized to the widest

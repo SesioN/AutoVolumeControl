@@ -17,6 +17,12 @@ namespace AutoVolumeControl
         internal const int DeferredRebuildPollMs = 50;
 
         // Sizes at 96 DPI and 100 %; everything in the menu is scaled with the display and the user's menu size.
+        /// <summary>
+        /// The size of the menu at the default "App Scale" of 100 %, relative to the sizes below (the menu was found
+        /// too small at 1.0).
+        /// </summary>
+        internal const float BaseScale = 1.3f;
+
         private const int ExitButtonWidth = 270;
         private const int ExitButtonHeight = 36;
         private const int SliderWidth = 180;
@@ -164,15 +170,15 @@ namespace AutoVolumeControl
         /// </summary>
         private void ApplyScale()
         {
-            scaleFactor = contextMenuStrip.DeviceDpi / 96f * scale.Factor;
+            scaleFactor = contextMenuStrip.DeviceDpi / 96f * BaseScale * scale.Factor;
 
             fonts?.Dispose();
             fonts = new MenuFonts(scaleFactor);
 
             var small = SystemInformation.SmallIconSize;
             icons.SetIconSize(new Size(
-                (int)Math.Round(small.Width * scale.Factor),
-                (int)Math.Round(small.Height * scale.Factor)));
+                (int)Math.Round(small.Width * BaseScale * scale.Factor),
+                (int)Math.Round(small.Height * BaseScale * scale.Factor)));
 
             contextMenuStrip.Padding = new Padding(Scale(2), Scale(4), Scale(2), Scale(4));
         }
