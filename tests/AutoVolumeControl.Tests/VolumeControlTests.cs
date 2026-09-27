@@ -63,7 +63,7 @@ namespace AutoVolumeControl.Tests
                 app.Started.Wait(TimeSpan.FromSeconds(10));
 
                 backend.SetSessions(new FakeSession("spotify"));
-                backend.RaiseSessionCreated();
+                backend.RaiseSessionsChanged();
 
                 Assert.True(Sta.PumpUntil(() => MenuShowsApp(app.ContextMenu, "spotify")));
             });

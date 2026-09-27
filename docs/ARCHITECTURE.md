@@ -42,8 +42,9 @@ flowchart LR
 | `MenuHandler` | Builds the tray menu (one checkbox per app, "Start with Windows", Exit). Rebuilds only when the content changed and disposes the old items. |
 | `AutoVolumeService` | Orchestrates everything audio related on the `AudioThread`: attach to the device, list apps, sync volumes, react to events. |
 | `AudioThread` | One long-lived MTA thread with a work queue. All COM objects are created, used and released there. |
-| `IAudioBackend` / `CoreAudioBackend` | Access to the default playback device via CSCore: master volume, sessions, and notifications (volume changed, session created, default device changed). |
-| `VolumeSynchronizer` | Applies master volume + mute to every enabled session; a failing session does not stop the others. |
+| `IAudioBackend` / `CoreAudioBackend` | Access to the default playback device via CSCore: master volume, sessions, and notifications (master volume, session created/state/volume/disconnect, process exit, default device). Watches each running app session and releases the watch when the session ends. |
+| `VolumeSynchronizer` | Writes master volume + mute to every enabled session where it differs; a failing session does not stop the others. |
+| `SessionFilter` | Decides which sessions belong to running apps (not expired, process alive). |
 | `SessionNameResolver` | Single source of truth for an app's name (process name, else exe name from the session identifier, else display name, else identifier). |
 | `Apps` | Thread-safe list of apps that currently have a session; raises `AppsUpdated` on change. |
 | `AppPreferences` | Per-app enabled flag on top of `ISettingsStore`; new apps default to enabled, invalid values are tolerated. |
@@ -63,30 +64,43 @@ flowchart LR
 
 ## Flows
 
-### Start
-1. `VolumeControl` creates the service and calls `Start()`.
-2. On the audio thread: `Attach()` binds to the default render device (role Multimedia),
-   registers the volume callback and session notifications, then runs a sync.
-3. If no device is available the task faults and the tray shows a balloon tip; a later
-   default-device change retries automatically.
+All audio work is one **reconcile** step on the audio thread:
 
-### Master volume changed
-1. The endpoint callback raises `MasterVolumeChanged`.
-2. `RequestSync()` enqueues at most one pending sync (further requests are merged).
-3. The sync reads the *current* master volume/mute, enumerates the sessions once, updates `Apps`
-   and applies the values to all enabled apps. Because the value is read when the sync runs,
-   a burst of notifications always ends on the latest volume.
+1. attach to the default device if not attached or if a re-attach was requested;
+2. read the master volume and the sessions of running apps (expired sessions and sessions of exited
+   processes are left out);
+3. update `Apps` and register new apps (enabled by default);
+4. write volume/mute of enabled apps **only where they differ** from the master (tolerance 0.001).
 
-### New app starts playing
-`SessionCreated` → `RequestSync()` → the app appears in the menu and gets the master volume.
+`RequestSync()` merges requests: at most one reconcile is queued, and it reads the master volume when it
+runs, so a burst of notifications always ends on the latest value.
 
-### Default device changed
-`DefaultDeviceChanged` (render / multimedia) → re-attach to the new device → sync.
+### Triggers (event driven)
 
-### Menu opened
-`Opening` → `RefreshAsync()` (waits at most 500 ms) → `Generate()`. `Generate()` compares a
-description of the content (apps, their flags, autostart) with the last rendered one and only
-rebuilds when it differs.
+| Event | Source | Effect |
+|---|---|---|
+| Master volume/mute changed | `IAudioEndpointVolumeCallback` | reconcile |
+| New session | `IAudioSessionNotification` | reconcile (app listed and synced) |
+| Session state changed (active, inactive, expired) | `IAudioSessionEvents` per session | reconcile |
+| App changed its own volume/mute | `IAudioSessionEvents` per session | reconcile (corrected); our own writes carry `CoreAudioBackend.EventContext` and are ignored |
+| App process exited | `Process.Exited` per session | reconcile (app removed) |
+| Session disconnected (device removed, audio service shut down) | `IAudioSessionEvents` | re-attach + reconcile |
+| Default device changed | `IMMNotificationClient` | re-attach + reconcile |
+| App enabled/disabled in the menu | `AppPreferences.Changed` | reconcile (enabled app synced immediately) |
+| Menu opened | `ContextMenuStrip.Opening` | reconcile (waits at most 500 ms), then `Generate()` |
+
+### Failure and recovery
+
+- `Attach()` is all-or-nothing: on any error everything (including the device enumerator) is released
+  and the backend reports not attached.
+- If attaching or reading fails (no device, audio service not running yet at logon, audio service
+  restarted), the app list is kept or cleared accordingly and a **retry timer** (3 s) runs until a
+  reconcile succeeds. While everything works the timer is stopped, so there is no polling.
+- The first start failure is shown as a balloon tip; retries continue in the background.
+
+### Menu
+`Generate()` compares a description of the content (apps, their flags, autostart) with the last rendered
+one and only rebuilds when it differs; replaced items are disposed.
 
 ## Persistence
 

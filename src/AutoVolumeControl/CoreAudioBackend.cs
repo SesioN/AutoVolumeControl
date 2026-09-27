@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Linq;
+using System.Runtime.InteropServices;
 using CSCore.CoreAudioAPI;
 
 namespace AutoVolumeControl
@@ -9,6 +11,10 @@ namespace AutoVolumeControl
     /// <summary><see cref="IAudioBackend"/> on top of the Windows Core Audio API (via CSCore).</summary>
     sealed class CoreAudioBackend : IAudioBackend
     {
+        /// <summary>Tags our own volume writes so the resulting notifications can be ignored.</summary>
+        internal static readonly Guid EventContext = new Guid("5d6c3a52-6f0b-4d1e-9a51-0c8f3f3e7a11");
+
+        private readonly Dictionary<string, SessionWatch> watches = new Dictionary<string, SessionWatch>();
         private MMDeviceEnumerator enumerator;
         private MMNotificationClient notificationClient;
         private MMDevice device;
@@ -17,33 +23,55 @@ namespace AutoVolumeControl
         private AudioSessionManager2 sessionManager;
 
         public event EventHandler MasterVolumeChanged;
-        public event EventHandler SessionCreated;
-        public event EventHandler DefaultDeviceChanged;
+        public event EventHandler SessionsChanged;
+        public event EventHandler ReattachRequired;
 
-        public bool IsAttached => endpointVolume != null;
+        public bool IsAttached => sessionManager != null;
+
+        internal int WatchedSessionCount => watches.Count;
 
         public void Attach()
         {
             Detach();
-
-            if (enumerator == null)
+            try
             {
-                enumerator = new MMDeviceEnumerator();
-                notificationClient = new MMNotificationClient(enumerator);
-                notificationClient.DefaultDeviceChanged += OnDefaultDeviceChanged;
+                if (enumerator == null)
+                {
+                    enumerator = new MMDeviceEnumerator();
+                    notificationClient = new MMNotificationClient(enumerator);
+                    notificationClient.DefaultDeviceChanged += OnDefaultDeviceChanged;
+                }
+
+                device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+
+                endpointVolume = AudioEndpointVolume.FromDevice(device);
+                volumeCallback = new VolumeCallback(this);
+                endpointVolume.RegisterControlChangeNotify(volumeCallback);
+
+                var manager = AudioSessionManager2.FromMMDevice(device);
+                try
+                {
+                    manager.SessionCreated += OnSessionCreated;
+                    // Windows discards session notifications until IAudioSessionEnumerator::GetCount was called once.
+                    using (var sessions = manager.GetSessionEnumerator())
+                        _ = sessions.Count;
+                }
+                catch
+                {
+                    UnregisterSessionCreated(manager);
+                    DisposeQuietly(manager);
+                    throw;
+                }
+
+                // Assigned last: IsAttached only becomes true once everything is registered.
+                sessionManager = manager;
             }
-
-            device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-
-            endpointVolume = AudioEndpointVolume.FromDevice(device);
-            volumeCallback = new VolumeCallback(this);
-            endpointVolume.RegisterControlChangeNotify(volumeCallback);
-
-            sessionManager = AudioSessionManager2.FromMMDevice(device);
-            sessionManager.SessionCreated += OnSessionCreated;
-            // Windows discards session notifications until IAudioSessionEnumerator::GetCount was called once.
-            using (var sessions = sessionManager.GetSessionEnumerator())
-                _ = sessions.Count;
+            catch
+            {
+                // Never stay half attached. The enumerator is recreated as well, in case the audio service restarted.
+                Dispose();
+                throw;
+            }
         }
 
         public (float Volume, bool Muted) GetMasterVolume()
@@ -57,22 +85,56 @@ namespace AutoVolumeControl
             EnsureAttached();
 
             var sessions = new List<IAudioSession>();
-            using var sessionEnumerator = sessionManager.GetSessionEnumerator();
-            foreach (var session in sessionEnumerator)
+            var seen = new HashSet<string>();
+            try
             {
-                try
+                using var sessionEnumerator = sessionManager.GetSessionEnumerator();
+                foreach (var session in sessionEnumerator)
                 {
-                    sessions.Add(new CoreAudioSession(session));
-                }
-                catch (Exception ex)
-                {
-                    Trace.WriteLine($"Skipping audio session: {ex.Message}");
-                }
-                finally
-                {
-                    session.Dispose();
+                    bool watched = false;
+                    try
+                    {
+                        using var control = session.QueryInterface<AudioSessionControl2>();
+                        var process = ProcessInfo.Get(control.ProcessID);
+                        if (!SessionFilter.BelongsToRunningApp(control.SessionState, process.Exited))
+                            continue;
+
+                        var name = SessionNameResolver.Resolve(process.Name, control.DisplayName, control.SessionIdentifier);
+                        sessions.Add(new CoreAudioSession(name, control.IsSystemSoundSession, session.QueryInterface<SimpleAudioVolume>()));
+
+                        var id = control.IsSystemSoundSession ? null : control.SessionInstanceIdentifier;
+                        if (id != null && seen.Add(id) && !watches.ContainsKey(id))
+                        {
+                            watches.Add(id, new SessionWatch(this, session, control.ProcessID));
+                            watched = true;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // A session that vanished while being read.
+                        Trace.WriteLine($"Skipping audio session: {ex.Message}");
+                    }
+                    finally
+                    {
+                        if (!watched)
+                            session.Dispose();
+                    }
                 }
             }
+            catch
+            {
+                foreach (var session in sessions)
+                    session.Dispose();
+                throw;
+            }
+
+            // Stop watching sessions that ended; they are not reported by the enumerator anymore.
+            foreach (var id in watches.Keys.Where(id => !seen.Contains(id)).ToList())
+            {
+                watches[id].Dispose();
+                watches.Remove(id);
+            }
+
             return sessions;
         }
 
@@ -85,18 +147,26 @@ namespace AutoVolumeControl
         private void OnDefaultDeviceChanged(object sender, DefaultDeviceChangedEventArgs e)
         {
             if (e.DataFlow == DataFlow.Render && e.Role == Role.Multimedia)
-                DefaultDeviceChanged?.Invoke(this, EventArgs.Empty);
+                ReattachRequired?.Invoke(this, EventArgs.Empty);
         }
 
         private void OnSessionCreated(object sender, SessionCreatedEventArgs e)
         {
             // CSCore adds a reference for the handler; the session is re-read on the audio thread.
             e.NewSession?.Dispose();
-            SessionCreated?.Invoke(this, EventArgs.Empty);
+            RaiseSessionsChanged();
         }
+
+        private void RaiseSessionsChanged() => SessionsChanged?.Invoke(this, EventArgs.Empty);
+
+        private void RaiseReattachRequired() => ReattachRequired?.Invoke(this, EventArgs.Empty);
 
         private void Detach()
         {
+            foreach (var watch in watches.Values)
+                watch.Dispose();
+            watches.Clear();
+
             if (endpointVolume != null && volumeCallback != null)
             {
                 try
@@ -110,20 +180,11 @@ namespace AutoVolumeControl
             }
 
             if (sessionManager != null)
-            {
-                try
-                {
-                    sessionManager.SessionCreated -= OnSessionCreated;
-                }
-                catch (Exception ex)
-                {
-                    Trace.WriteLine($"Unregistering session notification failed: {ex.Message}");
-                }
-            }
+                UnregisterSessionCreated(sessionManager);
 
-            sessionManager?.Dispose();
-            endpointVolume?.Dispose();
-            device?.Dispose();
+            DisposeQuietly(sessionManager);
+            DisposeQuietly(endpointVolume);
+            DisposeQuietly(device);
             sessionManager = null;
             endpointVolume = null;
             volumeCallback = null;
@@ -137,12 +198,37 @@ namespace AutoVolumeControl
             if (notificationClient != null)
             {
                 notificationClient.DefaultDeviceChanged -= OnDefaultDeviceChanged;
-                notificationClient.Dispose();
+                DisposeQuietly(notificationClient);
                 notificationClient = null;
             }
 
-            enumerator?.Dispose();
+            DisposeQuietly(enumerator);
             enumerator = null;
+        }
+
+        private void UnregisterSessionCreated(AudioSessionManager2 manager)
+        {
+            try
+            {
+                manager.SessionCreated -= OnSessionCreated;
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Unregistering session notification failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>Releasing objects of a stopped audio service can fail; that must not prevent re-attaching.</summary>
+        private static void DisposeQuietly(IDisposable disposable)
+        {
+            try
+            {
+                disposable?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Releasing an audio object failed: {ex.Message}");
+            }
         }
 
         private sealed class VolumeCallback : IAudioEndpointVolumeCallback
@@ -163,26 +249,113 @@ namespace AutoVolumeControl
             }
         }
 
+        /// <summary>
+        /// Keeps one session alive and forwards its events: state changes (e.g. expired when the app closed),
+        /// volume changes made by the app itself, disconnects, and the exit of its process.
+        /// </summary>
+        private sealed class SessionWatch : IDisposable
+        {
+            private readonly CoreAudioBackend owner;
+            private readonly AudioSessionControl session;
+            private readonly Process process;
+
+            public SessionWatch(CoreAudioBackend owner, AudioSessionControl session, int processId)
+            {
+                this.owner = owner;
+                this.session = session;
+                session.StateChanged += OnStateChanged;
+                session.SimpleVolumeChanged += OnSimpleVolumeChanged;
+                session.SessionDisconnected += OnSessionDisconnected;
+                process = TryWatchExit(processId);
+            }
+
+            private Process TryWatchExit(int processId)
+            {
+                if (processId == 0)
+                    return null;
+
+                Process watched = null;
+                try
+                {
+                    watched = Process.GetProcessById(processId);
+                    watched.EnableRaisingEvents = true;
+                    watched.Exited += OnProcessExited;
+                    return watched;
+                }
+                catch (Exception ex) when (ex is ArgumentException || ex is InvalidOperationException || ex is Win32Exception)
+                {
+                    // Already exited, or not accessible (e.g. elevated); the session events still cover it.
+                    watched?.Dispose();
+                    return null;
+                }
+            }
+
+            private void OnStateChanged(object sender, AudioSessionStateChangedEventArgs e) => owner.RaiseSessionsChanged();
+
+            private void OnSimpleVolumeChanged(object sender, AudioSessionSimpleVolumeChangedEventArgs e)
+            {
+                if (e.EventContext != EventContext)
+                    owner.RaiseSessionsChanged();
+            }
+
+            private void OnSessionDisconnected(object sender, AudioSessionDisconnectedEventArgs e)
+            {
+                if (e.DisconnectReason == AudioSessionDisconnectReason.DisconnectReasonDeviceRemoval ||
+                    e.DisconnectReason == AudioSessionDisconnectReason.DisconnectReasonServerShutdown)
+                    owner.RaiseReattachRequired();
+                else
+                    owner.RaiseSessionsChanged();
+            }
+
+            private void OnProcessExited(object sender, EventArgs e) => owner.RaiseSessionsChanged();
+
+            public void Dispose()
+            {
+                try
+                {
+                    session.StateChanged -= OnStateChanged;
+                    session.SimpleVolumeChanged -= OnSimpleVolumeChanged;
+                    session.SessionDisconnected -= OnSessionDisconnected;
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"Unsubscribing session events failed: {ex.Message}");
+                }
+                DisposeQuietly(session);
+
+                if (process != null)
+                {
+                    process.Exited -= OnProcessExited;
+                    process.Dispose();
+                }
+            }
+        }
+
         private sealed class CoreAudioSession : IAudioSession
         {
             private readonly SimpleAudioVolume simpleAudioVolume;
 
-            public CoreAudioSession(AudioSessionControl session)
+            public CoreAudioSession(string name, bool isSystemSound, SimpleAudioVolume simpleAudioVolume)
             {
-                using var control = session.QueryInterface<AudioSessionControl2>();
-                IsSystemSound = control.IsSystemSoundSession;
-                Name = SessionNameResolver.Resolve(GetProcessName(control.ProcessID), control.DisplayName, control.SessionIdentifier);
-                simpleAudioVolume = session.QueryInterface<SimpleAudioVolume>();
+                Name = name;
+                IsSystemSound = isSystemSound;
+                this.simpleAudioVolume = simpleAudioVolume;
             }
 
             public string Name { get; }
 
             public bool IsSystemSound { get; }
 
-            public void Apply(float volume, bool muted)
+            public float Volume
             {
-                simpleAudioVolume.MasterVolume = volume;
-                simpleAudioVolume.IsMuted = muted;
+                get => simpleAudioVolume.MasterVolume;
+                set => Check(simpleAudioVolume.SetMasterVolumeNative(value, EventContext));
+            }
+
+            public bool Muted
+            {
+                get => simpleAudioVolume.IsMuted;
+                set => Check(simpleAudioVolume.SetMuteNative(value, EventContext));
             }
 
             public void Dispose()
@@ -190,21 +363,49 @@ namespace AutoVolumeControl
                 simpleAudioVolume.Dispose();
             }
 
-            private static string GetProcessName(int processId)
+            private static void Check(int hresult)
             {
-                // 0 is the idle process; such sessions do not belong to an app.
+                if (hresult < 0)
+                    Marshal.ThrowExceptionForHR(hresult);
+            }
+        }
+
+        private readonly struct ProcessInfo
+        {
+            private ProcessInfo(string name, bool exited)
+            {
+                Name = name;
+                Exited = exited;
+            }
+
+            public string Name { get; }
+
+            public bool Exited { get; }
+
+            public static ProcessInfo Get(int processId)
+            {
+                // 0: sessions that are not tied to a single process (e.g. system sounds).
                 if (processId == 0)
-                    return null;
+                    return new ProcessInfo(null, false);
 
                 try
                 {
                     using var process = Process.GetProcessById(processId);
-                    return process.ProcessName;
+                    return new ProcessInfo(process.ProcessName, false);
                 }
-                catch (Exception ex) when (ex is ArgumentException || ex is InvalidOperationException || ex is Win32Exception)
+                catch (ArgumentException)
                 {
-                    // Process already exited; the session identifier still names the executable.
-                    return null;
+                    return new ProcessInfo(null, true);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Exited between the lookup and reading the name.
+                    return new ProcessInfo(null, true);
+                }
+                catch (Win32Exception)
+                {
+                    // Running but not accessible; the session identifier still names the executable.
+                    return new ProcessInfo(null, false);
                 }
             }
         }

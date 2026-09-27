@@ -62,29 +62,51 @@ namespace AutoVolumeControl.Tests
 
     sealed class FakeSession : IAudioSession
     {
-        public FakeSession(string name, bool isSystemSound = false)
+        private float volume;
+        private bool muted;
+
+        public FakeSession(string name, bool isSystemSound = false, float volume = 1f, bool muted = false)
         {
             Name = name;
             IsSystemSound = isSystemSound;
+            this.volume = volume;
+            this.muted = muted;
         }
 
         public string Name { get; }
         public bool IsSystemSound { get; }
-        public bool ThrowOnApply { get; set; }
-        public float? Volume { get; private set; }
-        public bool? Muted { get; private set; }
-        public int ApplyCount { get; private set; }
+        public bool ThrowOnWrite { get; set; }
+        public int VolumeWrites { get; private set; }
+        public int MuteWrites { get; private set; }
+        public int Writes => VolumeWrites + MuteWrites;
         public int DisposeCount { get; private set; }
 
-        public void Apply(float volume, bool muted)
+        public float Volume
         {
-            if (ThrowOnApply)
-                throw new InvalidOperationException("session gone");
-
-            Volume = volume;
-            Muted = muted;
-            ApplyCount++;
+            get => volume;
+            set
+            {
+                if (ThrowOnWrite)
+                    throw new InvalidOperationException("session gone");
+                volume = value;
+                VolumeWrites++;
+            }
         }
+
+        public bool Muted
+        {
+            get => muted;
+            set
+            {
+                if (ThrowOnWrite)
+                    throw new InvalidOperationException("session gone");
+                muted = value;
+                MuteWrites++;
+            }
+        }
+
+        /// <summary>Simulates the app changing its own volume.</summary>
+        public void ChangeOwnVolume(float newVolume) => volume = newVolume;
 
         public void Dispose() => DisposeCount++;
     }
@@ -97,22 +119,24 @@ namespace AutoVolumeControl.Tests
         private bool muted;
 
         public event EventHandler MasterVolumeChanged;
-        public event EventHandler SessionCreated;
-        public event EventHandler DefaultDeviceChanged;
+        public event EventHandler SessionsChanged;
+        public event EventHandler ReattachRequired;
 
         public bool IsAttached { get; private set; }
         public int AttachCount { get; private set; }
         public int GetMasterVolumeCount { get; private set; }
+        public int GetSessionsCount { get; private set; }
         public Exception AttachException { get; set; }
+        /// <summary>Thrown by the next GetSessions calls while set (e.g. audio service restarted).</summary>
+        public Exception SessionsException { get; set; }
         public bool Disposed { get; private set; }
         public HashSet<int> CallingThreadIds { get; } = new HashSet<int>();
-        public int? DisposeThreadId { get; private set; }
 
         /// <summary>When set, GetMasterVolume blocks until the gate is opened.</summary>
         public ManualResetEventSlim GetMasterVolumeGate { get; set; }
         public ManualResetEventSlim GetMasterVolumeEntered { get; } = new ManualResetEventSlim();
 
-        public bool HasSubscribers => MasterVolumeChanged != null || SessionCreated != null || DefaultDeviceChanged != null;
+        public bool HasSubscribers => MasterVolumeChanged != null || SessionsChanged != null || ReattachRequired != null;
 
         public void SetMaster(float newVolume, bool newMuted)
         {
@@ -132,8 +156,8 @@ namespace AutoVolumeControl.Tests
         }
 
         public void RaiseMasterVolumeChanged() => MasterVolumeChanged?.Invoke(this, EventArgs.Empty);
-        public void RaiseSessionCreated() => SessionCreated?.Invoke(this, EventArgs.Empty);
-        public void RaiseDefaultDeviceChanged() => DefaultDeviceChanged?.Invoke(this, EventArgs.Empty);
+        public void RaiseSessionsChanged() => SessionsChanged?.Invoke(this, EventArgs.Empty);
+        public void RaiseReattachRequired() => ReattachRequired?.Invoke(this, EventArgs.Empty);
 
         public void Attach()
         {
@@ -162,6 +186,9 @@ namespace AutoVolumeControl.Tests
         public IReadOnlyList<IAudioSession> GetSessions()
         {
             Record();
+            GetSessionsCount++;
+            if (SessionsException != null)
+                throw SessionsException;
             lock (lockObj)
             {
                 return sessions.Cast<IAudioSession>().ToList();
@@ -173,7 +200,6 @@ namespace AutoVolumeControl.Tests
             Record();
             Disposed = true;
             IsAttached = false;
-            DisposeThreadId = Thread.CurrentThread.ManagedThreadId;
         }
 
         private void Record()

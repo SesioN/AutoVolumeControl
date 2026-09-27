@@ -1,3 +1,5 @@
+using System;
+
 namespace AutoVolumeControl
 {
     /// <summary>Per-app "sync this app with the master volume" flag. New apps are enabled by default.</summary>
@@ -9,6 +11,9 @@ namespace AutoVolumeControl
         {
             this.store = store;
         }
+
+        /// <summary>Raised on the calling thread after the user changed an app's flag.</summary>
+        public event EventHandler Changed;
 
         public bool IsEnabled(string appName)
         {
@@ -29,6 +34,7 @@ namespace AutoVolumeControl
                 return;
 
             store.Set(appName, enabled.ToString());
+            Changed?.Invoke(this, EventArgs.Empty);
         }
 
         /// <summary>Persists the default for an app that has not been seen before.</summary>

@@ -109,7 +109,9 @@ namespace AutoVolumeControl
                 apps.AppsUpdated -= OnAppsUpdated;
                 service.Dispose();
                 notifyIcon.Visible = false;
+                var icon = notifyIcon.Icon;
                 notifyIcon.Dispose();
+                icon?.Dispose();
                 contextMenuStrip.Dispose();
                 appSettings.Dispose();
                 uiControl.Dispose();

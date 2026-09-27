@@ -88,5 +88,27 @@ namespace AutoVolumeControl.Tests
             preferences.Register("");
             Assert.Empty(store.Values);
         }
+
+        [Fact]
+        public void SetEnabled_RaisesChanged()
+        {
+            int raised = 0;
+            preferences.Changed += (s, e) => raised++;
+
+            preferences.SetEnabled("chrome", false);
+
+            Assert.Equal(1, raised);
+        }
+
+        [Fact]
+        public void Register_DoesNotRaiseChanged()
+        {
+            int raised = 0;
+            preferences.Changed += (s, e) => raised++;
+
+            preferences.Register("chrome");
+
+            Assert.Equal(0, raised);
+        }
     }
 }
