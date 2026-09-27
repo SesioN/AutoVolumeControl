@@ -158,6 +158,17 @@ one and only rebuilds when it differs; replaced items are disposed.
   finalizer thread. (An earlier version used the CSCore wrapper library, whose finalizers could end the process
   after an audio service restart; it was replaced by `CoreAudioInterop`.)
 
+## Manual tests
+
+The automated tests cover the notification plumbing against the real audio stack, but two triggers cannot be
+produced without changing the machine's configuration, so they are checked by hand:
+
+1. **Default device change:** switch the default playback device (e.g. speakers ↔ headset) while an app plays
+   audio. The menu shows the apps of the new device and they follow its master volume.
+2. **Audio service restart:** as administrator run `net stop audiosrv && net start audiosrv` while the app runs.
+   Within a few seconds after the service is back the apps are listed and synced again; the log shows the
+   re-attach.
+
 ## Known limitations
 
 - Only the default playback device (role Multimedia) is watched; apps routed to another device are not listed.

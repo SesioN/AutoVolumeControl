@@ -13,6 +13,14 @@ namespace AutoVolumeControl.Tests
         private string LogPath => Path.Combine(directory, "AutoVolumeControl.log");
         private string OldPath => Path.Combine(directory, "AutoVolumeControl.old.log");
 
+        /// <summary>Reads a file the log still has open, as a log viewer would.</summary>
+        private static string ReadShared(string file)
+        {
+            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            return reader.ReadToEnd();
+        }
+
         public void Dispose()
         {
             if (Directory.Exists(directory))
@@ -105,6 +113,50 @@ namespace AutoVolumeControl.Tests
             }
 
             Assert.Contains(File.ReadAllLines(LogPath), l => l.EndsWith(" first part, second part"));
+        }
+
+        [Fact]
+        public void LockedOldFile_LoggingContinues_AndRotationIsRetried()
+        {
+            var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            Directory.CreateDirectory(directory);
+            using (var log = LogFile.Start(directory, maxBytes: 1000, clock: () => now))
+            {
+                using (new FileStream(OldPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    for (int i = 0; i < 40; i++)
+                        log.WriteLine($"locked {i} " + new string('x', 50));
+                }
+
+                // Rotation failed while the old file was locked; everything went to the current file.
+                Assert.Contains("locked 39", ReadShared(LogPath));
+
+                now += LogFile.RetryInterval;
+                log.WriteLine("after unlock");
+            }
+
+            Assert.Contains("locked 39", File.ReadAllText(OldPath));
+            Assert.True(new FileInfo(LogPath).Length < 1000);
+        }
+
+        [Fact]
+        public void LockedLogFile_LoggingResumesWhenItIsFree()
+        {
+            var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            Directory.CreateDirectory(directory);
+            LogFile log;
+            using (new FileStream(LogPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                log = LogFile.Start(directory, clock: () => now);
+                Assert.NotNull(log);
+                log.WriteLine("lost");
+            }
+
+            now += LogFile.RetryInterval;
+            log.WriteLine("resumed");
+            log.Dispose();
+
+            Assert.Contains("resumed", File.ReadAllText(LogPath));
         }
 
         [Fact]

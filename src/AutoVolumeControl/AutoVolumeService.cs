@@ -40,6 +40,7 @@ namespace AutoVolumeControl
         private bool disposed;
         private int consecutiveFailures;
         private Exception lastError;
+        private readonly Stopwatch sinceLastAttach = new Stopwatch();
 
         public AutoVolumeService(IAudioBackend backend, AppPreferences preferences, Apps apps, TimeSpan? retryInterval = null, CorrectionThrottle throttle = null)
         {
@@ -135,9 +136,17 @@ namespace AutoVolumeControl
 
         private Exception AttachIfNeeded()
         {
+            if (backend.IsAttached && Volatile.Read(ref attachRequested) == 1 && AttachTooSoon())
+            {
+                // Requested again right after an attach: keep the request and let the timer do it later, so no
+                // chain of notifications can make the app re-attach in a tight loop.
+                return null;
+            }
+
             if (Interlocked.Exchange(ref attachRequested, 0) == 0 && backend.IsAttached)
                 return null;
 
+            sinceLastAttach.Restart();
             try
             {
                 backend.Attach();
@@ -191,6 +200,14 @@ namespace AutoVolumeControl
                 return;
 
             var due = failed ? RetryDelay(consecutiveFailures) : Timeout.InfiniteTimeSpan;
+            if (Volatile.Read(ref attachRequested) == 1)
+            {
+                // A deferred re-attach (see AttachIfNeeded) runs once the minimum distance has passed.
+                var remaining = retryInterval - sinceLastAttach.Elapsed;
+                var deferred = remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+                if (due == Timeout.InfiniteTimeSpan || deferred < due)
+                    due = deferred;
+            }
             var resume = throttle.TimeUntilNextResume();
             if (resume.HasValue && (due == Timeout.InfiniteTimeSpan || resume.Value < due))
                 due = resume.Value;
@@ -204,6 +221,8 @@ namespace AutoVolumeControl
                 // Disposed concurrently.
             }
         }
+
+        private bool AttachTooSoon() => sinceLastAttach.IsRunning && sinceLastAttach.Elapsed < retryInterval;
 
         private TimeSpan RetryDelay(int failures) => RetryDelay(retryInterval, failures);
 

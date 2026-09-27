@@ -259,22 +259,16 @@ namespace AutoVolumeControl.Tests
                     raw.Control.RegisterAudioSessionNotification(events);
                 }).Wait(Timeout);
 
-                bool Seen(float volume, out Guid context)
-                {
-                    var match = events.VolumeChanges.FirstOrDefault(n => Math.Abs(n.Volume - volume) < 0.001f);
-                    context = match.Context;
-                    return match != default;
-                }
+                // Other programs may change this session too (e.g. a running AutoVolumeControl syncing the test
+                // process), so look for the specific notification instead of the first one.
+                bool Seen(float volume, bool ours) => events.VolumeChanges.Any(n =>
+                    Math.Abs(n.Volume - volume) < 0.001f && (n.Context == CoreAudioBackend.EventContext) == ours);
 
                 audioThread.Post(() => { own.Volume = 0.25f; }).Wait(Timeout);
-                Assert.True(WaitFor(() => Seen(0.25f, out _), TimeSpan.FromSeconds(3)), "No notification for our own write.");
-                Seen(0.25f, out var ownContext);
-                Assert.Equal(CoreAudioBackend.EventContext, ownContext);
+                Assert.True(WaitFor(() => Seen(0.25f, ours: true), TimeSpan.FromSeconds(5)), "No notification tagged with our context for our own write.");
 
                 audioThread.Post(() => { raw.Volume = 0.75f; }).Wait(Timeout);
-                Assert.True(WaitFor(() => Seen(0.75f, out _), TimeSpan.FromSeconds(3)), "No notification for the change by the app.");
-                Seen(0.75f, out var appContext);
-                Assert.NotEqual(CoreAudioBackend.EventContext, appContext);
+                Assert.True(WaitFor(() => Seen(0.75f, ours: false), TimeSpan.FromSeconds(5)), "No untagged notification for the change by the app.");
 
                 audioThread.Post(() =>
                 {
@@ -379,6 +373,59 @@ namespace AutoVolumeControl.Tests
 
                 Assert.InRange(Process.GetCurrentProcess().HandleCount - handles, -50, 50);
                 Assert.Equal(watches, audioThread.Post(() => backend.WatchedSessionCount).Result);
+            }
+            finally
+            {
+                audioThread.Post(backend.Dispose).Wait(Timeout);
+            }
+        }
+
+        [SkippableFact]
+        public void RepeatedRescans_KeepWatchesWorking_AndDoNotLeak()
+        {
+            // Every rescan gets another reference to already watched sessions and releases it again. An
+            // over-release would break the watch (COM calls fail, events stop); a missing release would leak.
+            SkipWithoutPlaybackDevice();
+            using var audioThread = new AudioThread();
+            var backend = new CoreAudioBackend();
+            using var silence = PlaySilence();
+            audioThread.Post(backend.Attach).Wait(Timeout);
+            try
+            {
+                var own = FindSession(audioThread, backend, OwnProcessName);
+                Skip.If(own == null, "Could not create an audio session for the test process.");
+
+                void Rescan(int times) => audioThread.Post(() =>
+                {
+                    for (int i = 0; i < times; i++)
+                    {
+                        backend.InvalidateSessions();
+                        backend.GetSessions();
+                    }
+                }).Wait(TimeSpan.FromSeconds(60));
+
+                Rescan(10);
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                int handles = Process.GetCurrentProcess().HandleCount;
+                int watches = audioThread.Post(() => backend.WatchedSessionCount).Result;
+
+                Rescan(200);
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+
+                Assert.InRange(Process.GetCurrentProcess().HandleCount - handles, -50, 50);
+                Assert.Equal(watches, audioThread.Post(() => backend.WatchedSessionCount).Result);
+
+                // The watch still works: read, write and notifications.
+                audioThread.Post(() => { own.Volume = 0.42f; own.Muted = false; }).Wait(Timeout);
+                Assert.Equal(0.42f, audioThread.Post(() => own.Volume).Result, 2);
+                int changes = 0;
+                backend.SessionsChanged += (s, e) => Interlocked.Increment(ref changes);
+                audioThread.Post(() => { using var raw = RawOwnSession.Open(); raw.Volume = 0.9f; }).Wait(Timeout);
+                Assert.True(WaitFor(() => Volatile.Read(ref changes) > 0, TimeSpan.FromSeconds(3)), "The watch no longer reports changes.");
+
+                audioThread.Post(() => { own.Volume = 1f; }).Wait(Timeout);
             }
             finally
             {

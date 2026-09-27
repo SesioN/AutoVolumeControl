@@ -391,9 +391,10 @@ namespace AutoVolumeControl.Tests
             backend.SetMaster(0.8f, false);
 
             backend.RaiseReattachRequired();
-            Flush();
 
-            Assert.Equal(2, backend.AttachCount);
+            // Right after an attach, a new one is deferred by up to one retry interval.
+            WaitUntil(() => backend.AttachCount == 2, "the re-attach should run");
+            Flush();
             Assert.Equal(new[] { "discord" }, apps.GetApps());
             Assert.Equal(0.8f, headset.Volume);
         }
@@ -406,11 +407,40 @@ namespace AutoVolumeControl.Tests
 
             backend.AttachException = new InvalidOperationException("no device");
             backend.RaiseReattachRequired();
-            Flush();
-            Assert.Empty(apps.GetApps());
+            WaitUntil(() => !apps.GetApps().Any(), "the failed re-attach should clear the list");
 
             backend.AttachException = null;
             WaitUntil(() => apps.GetApps().Contains("chrome"), "the retry should re-attach without any event");
+        }
+
+        [Fact]
+        public void RepeatedReattachRequests_CannotLoop()
+        {
+            // E.g. one session keeps reporting "binding lost" although the device works: at most one
+            // re-attach per retry interval, not a busy loop.
+            backend.SetSessions(new FakeSession("chrome"));
+            StartAttached();
+            backend.OnGetSessions = () => backend.RaiseReattachRequired();
+            backend.RaiseReattachRequired();
+
+            Thread.Sleep(RetryInterval.Milliseconds * 10);
+            backend.OnGetSessions = null;
+            Flush();
+
+            // 500 ms at one re-attach per 50 ms: about 10. A loop would reach thousands.
+            Assert.InRange(backend.AttachCount, 2, 20);
+        }
+
+        [Fact]
+        public void SpacedReattachRequests_AreHandledImmediately()
+        {
+            StartAttached();
+            Thread.Sleep(RetryInterval + RetryInterval);
+
+            backend.RaiseReattachRequired();
+            Flush();
+
+            Assert.Equal(2, backend.AttachCount);
         }
 
         [Fact]

@@ -227,6 +227,26 @@ namespace AutoVolumeControl
 
         private void RaiseMasterVolumeChanged() => MasterVolumeChanged?.Invoke(this, EventArgs.Empty);
 
+        /// <summary>
+        /// Checks with a cheap call whether the device binding still works. A single session can fail with a
+        /// "binding lost" error while the device is fine; re-attaching would then only loop.
+        /// </summary>
+        private bool IsBindingAlive()
+        {
+            if (!attached)
+                return false;
+
+            try
+            {
+                endpointVolume.GetMute(out _);
+                return true;
+            }
+            catch (COMException)
+            {
+                return false;
+            }
+        }
+
         private void Detach()
         {
             attached = false;
@@ -430,7 +450,7 @@ namespace AutoVolumeControl
                 }
                 catch (COMException ex)
                 {
-                    if (AudioEventRules.IsBindingLost(ex.ErrorCode))
+                    if (AudioEventRules.IsBindingLost(ex.ErrorCode) && !owner.IsBindingAlive())
                         owner.RaiseReattachRequired();
                     else
                         owner.MarkSessionsDirty();

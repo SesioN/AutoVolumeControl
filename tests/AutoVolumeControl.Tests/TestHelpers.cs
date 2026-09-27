@@ -192,10 +192,14 @@ namespace AutoVolumeControl.Tests
             InvalidateCount++;
         }
 
+        /// <summary>Runs inside every GetSessions call, e.g. to raise notifications like a real session would.</summary>
+        public Action OnGetSessions { get; set; }
+
         public IReadOnlyList<IAudioSession> GetSessions()
         {
             Record();
             GetSessionsCount++;
+            OnGetSessions?.Invoke();
             if (SessionsException != null)
                 throw SessionsException;
             lock (lockObj)
