@@ -9,7 +9,7 @@ namespace AutoVolumeControl
     /// <summary>
     /// Finds the executable of an audio session's app, so the menu can show its icon. Tries, in this order:
     /// the running process (works for most processes, including many elevated ones), the path inside the session
-    /// identifier, and the icon path the app may have set on its session.
+    /// identifier, and the icon path the app may have set on its session (if it names an executable).
     /// </summary>
     static class ExecutableLocator
     {
@@ -21,7 +21,7 @@ namespace AutoVolumeControl
         {
             return ExistingFile(FromProcess(processId))
                 ?? ExistingFile(SessionNameResolver.ExecutablePathFromSessionIdentifier(sessionIdentifier, DriveDevices()))
-                ?? ExistingFile(SessionNameResolver.FileFromIconPath(iconPath?.Invoke()));
+                ?? ExistingFile(SessionNameResolver.ExecutableFromIconPath(iconPath?.Invoke()));
         }
 
         /// <summary>QueryFullProcessImageName needs less access than Process.MainModule, so it also works for many elevated apps.</summary>
@@ -36,7 +36,8 @@ namespace AutoVolumeControl
 
             try
             {
-                int size = 1024;
+                // Room for the longest path Windows supports, so long paths do not silently fail.
+                int size = 32768;
                 var buffer = new StringBuilder(size);
                 return QueryFullProcessImageName(handle, 0, buffer, ref size) ? buffer.ToString() : null;
             }

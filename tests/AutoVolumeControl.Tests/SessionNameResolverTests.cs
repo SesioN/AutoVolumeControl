@@ -152,5 +152,15 @@ namespace AutoVolumeControl.Tests
         {
             Assert.Null(SessionNameResolver.FileFromIconPath(iconPath));
         }
+
+        [Theory]
+        [InlineData(@"C:\Apps\app.exe,0", @"C:\Apps\app.exe")]
+        [InlineData(@"@C:\Windows\System32\sndvol.dll,-101", null)]
+        [InlineData(@"C:\Apps\icon.ico", null)]
+        [InlineData(null, null)]
+        public void ExecutableFromIconPath_AcceptsOnlyExecutables(string iconPath, string expected)
+        {
+            Assert.Equal(expected, SessionNameResolver.ExecutableFromIconPath(iconPath));
+        }
     }
 }

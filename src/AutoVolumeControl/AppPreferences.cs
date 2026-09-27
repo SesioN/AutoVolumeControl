@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 
 namespace AutoVolumeControl
@@ -15,6 +16,9 @@ namespace AutoVolumeControl
 
         private readonly ISettingsStore store;
         private readonly ISettingsStore ratioStore;
+        // Ratios set while a slider is dragged: already used by the sync, written to the store on commit.
+        private readonly Dictionary<string, int> pendingRatios = new Dictionary<string, int>();
+        private readonly object pendingLock = new object();
 
         public AppPreferences(ISettingsStore store)
         {
@@ -56,6 +60,12 @@ namespace AutoVolumeControl
             if (string.IsNullOrEmpty(appName))
                 return DefaultRatioPercent;
 
+            lock (pendingLock)
+            {
+                if (pendingRatios.TryGetValue(appName, out int pending))
+                    return pending;
+            }
+
             var value = ratioStore.Get(appName);
             // Like the flag, a hand-edited or corrupted value is tolerated: unreadable means the default,
             // out of range is clamped.
@@ -75,18 +85,57 @@ namespace AutoVolumeControl
         }
 
         /// <summary>Stores the ratio in percent; values outside 0 to 100 are clamped. Writes only on a change.</summary>
-        public void SetRatioPercent(string appName, int percent)
+        /// <param name="persist">
+        /// false while the user drags a slider: the value takes effect immediately (and raises <see cref="Changed"/>),
+        /// but is only written by <see cref="CommitRatios"/>, so a drag costs one write instead of one per step.
+        /// </param>
+        public void SetRatioPercent(string appName, int percent, bool persist = true)
         {
             if (string.IsNullOrEmpty(appName))
                 return;
 
-            var value = ClampPercent(percent).ToString(CultureInfo.InvariantCulture);
+            percent = ClampPercent(percent);
             // The slider reports every step while dragging; unchanged values cost neither a write nor a sync.
-            if (ratioStore.Get(appName) == value)
-                return;
+            bool changed = GetRatioPercent(appName) != percent;
+            if (persist)
+            {
+                lock (pendingLock)
+                {
+                    pendingRatios.Remove(appName);
+                }
+                Write(appName, percent);
+            }
+            else if (changed)
+            {
+                lock (pendingLock)
+                {
+                    pendingRatios[appName] = percent;
+                }
+            }
 
-            ratioStore.Set(appName, value);
-            Changed?.Invoke(this, EventArgs.Empty);
+            if (changed)
+                Changed?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>Writes the ratios set with <c>persist: false</c>.</summary>
+        public void CommitRatios()
+        {
+            List<KeyValuePair<string, int>> pending;
+            lock (pendingLock)
+            {
+                pending = new List<KeyValuePair<string, int>>(pendingRatios);
+                pendingRatios.Clear();
+            }
+            // The values were already in effect, so nothing changes for the sync.
+            foreach (var ratio in pending)
+                Write(ratio.Key, ratio.Value);
+        }
+
+        private void Write(string appName, int percent)
+        {
+            var value = percent.ToString(CultureInfo.InvariantCulture);
+            if (ratioStore.Get(appName) != value)
+                ratioStore.Set(appName, value);
         }
 
         /// <summary>Persists the default for an app that has not been seen before.</summary>

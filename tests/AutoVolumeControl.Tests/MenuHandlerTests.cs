@@ -48,6 +48,18 @@ namespace AutoVolumeControl.Tests
 
         private static MaterialSlider FindSlider(ContextMenuStrip strip, string app) => FindControl<MaterialSlider>(strip, MenuHandler.SliderName(app));
 
+        private static void Invoke(Control control, string method, EventArgs args)
+        {
+            typeof(Control).GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic).Invoke(control, new object[] { args });
+        }
+
+        private static ToolStripDropDownClosingEventArgs RaiseClosing(ContextMenuStrip strip, ToolStripDropDownCloseReason reason)
+        {
+            var args = new ToolStripDropDownClosingEventArgs(reason);
+            typeof(ToolStripDropDown).GetMethod("OnClosing", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(strip, new object[] { args });
+            return args;
+        }
+
         /// <summary>Raises the slider's value event the way dragging does (setting Value does not raise it).</summary>
         private static void Drag(MaterialSlider slider, int value)
         {
@@ -495,10 +507,14 @@ namespace AutoVolumeControl.Tests
                     Assert.Same(slider, FindSlider(strip, "spotify"));
                     Assert.False(slider.IsDisposed);
 
-                    // Releasing the button (anywhere in the menu) runs the deferred rebuild.
+                    // Still held: the poll keeps waiting.
+                    Sta.PumpUntil(() => false, MenuHandler.DeferredRebuildPollMs * 4);
+                    Assert.True(menu.RebuildDeferred);
+                    Assert.False(slider.IsDisposed);
+
+                    // Released anywhere (no mouse-up event reaches the menu, e.g. over a separator or outside):
+                    // the poll runs the deferred rebuild.
                     mouseButtonDown = false;
-                    typeof(Control).GetMethod("OnMouseUp", BindingFlags.Instance | BindingFlags.NonPublic)
-                        .Invoke(slider, new object[] { new MouseEventArgs(MouseButtons.Left, 1, 5, 5, 0) });
 
                     Assert.True(Sta.PumpUntil(() => FindCheckbox(strip, "chrome") != null));
                     Assert.False(menu.RebuildDeferred);
@@ -539,6 +555,186 @@ namespace AutoVolumeControl.Tests
                 RaiseOpening(strip);
 
                 Assert.NotNull(FindCheckbox(strip, "chrome"));
+            });
+        }
+
+        // ---- dragging ----
+
+        [Fact]
+        public void Dragging_TakesEffectImmediately_ButWritesOnlyOnRelease()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "spotify" });
+                CreateMenu(strip).Generate();
+                int changes = 0;
+                preferences.Changed += (s, e) => changes++;
+                var slider = FindSlider(strip, "spotify");
+
+                Invoke(slider, "OnMouseDown", new MouseEventArgs(MouseButtons.Left, 1, 0, 20, 0));
+                Drag(slider, 30);
+                Drag(slider, 20);
+
+                Assert.Equal(20, preferences.GetRatioPercent("spotify"));
+                Assert.True(changes >= 2);
+                Assert.False(store.Ratios.ContainsKey("spotify"));
+
+                Invoke(slider, "OnMouseUp", new MouseEventArgs(MouseButtons.Left, 1, 0, 20, 0));
+
+                Assert.Equal("20", store.Ratios["spotify"]);
+                Assert.Equal(20, preferences.GetRatioPercent("spotify"));
+            });
+        }
+
+        [Fact]
+        public void Closing_IsCancelledOnlyWhileASliderIsDragged()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "spotify" });
+                var menu = CreateMenu(strip);
+                menu.Generate();
+                var slider = FindSlider(strip, "spotify");
+                mouseButtonDown = true;
+
+                Assert.False(RaiseClosing(strip, ToolStripDropDownCloseReason.AppClicked).Cancel);
+
+                Invoke(slider, "OnMouseDown", new MouseEventArgs(MouseButtons.Left, 1, 0, 20, 0));
+                Assert.True(menu.DraggingSlider);
+                Assert.True(RaiseClosing(strip, ToolStripDropDownCloseReason.AppClicked).Cancel);
+                Assert.False(RaiseClosing(strip, ToolStripDropDownCloseReason.Keyboard).Cancel);
+                Assert.False(RaiseClosing(strip, ToolStripDropDownCloseReason.AppFocusChange).Cancel);
+
+                mouseButtonDown = false;
+                Assert.False(RaiseClosing(strip, ToolStripDropDownCloseReason.AppClicked).Cancel);
+            });
+        }
+
+        [Fact]
+        public void LostMouseUp_DoesNotKeepTheMenuFromClosing()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "spotify" });
+                var menu = CreateMenu(strip);
+                menu.Generate();
+                var slider = FindSlider(strip, "spotify");
+                mouseButtonDown = true;
+                Invoke(slider, "OnMouseDown", new MouseEventArgs(MouseButtons.Left, 1, 0, 20, 0));
+                Drag(slider, 40);
+
+                // E.g. Escape while the button is still down: no mouse-up ever reaches the slider.
+                RaiseOpening(strip);
+
+                Assert.False(menu.DraggingSlider);
+                Assert.Equal("40", store.Ratios["spotify"]);
+                Assert.False(RaiseClosing(strip, ToolStripDropDownCloseReason.AppClicked).Cancel);
+            });
+        }
+
+        [Fact]
+        public void MouseWheelUp_RaisesTheRatio()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "spotify" });
+                store.Ratios["spotify"] = "50";
+                CreateMenu(strip).Generate();
+                var slider = FindSlider(strip, "spotify");
+
+                Invoke(slider, "OnMouseWheel", new HandledMouseEventArgs(MouseButtons.None, 0, 0, 0, 120));
+                Assert.Equal(50 + RatioSlider.WheelStep, slider.Value);
+                Assert.Equal("55", store.Ratios["spotify"]);
+
+                Invoke(slider, "OnMouseWheel", new HandledMouseEventArgs(MouseButtons.None, 0, 0, 0, -240));
+                Assert.Equal("50", store.Ratios["spotify"]);
+            });
+        }
+
+        [Fact]
+        public void MouseWheel_DoesNothingOnADisabledSlider()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "spotify" });
+                store.Values["spotify"] = "False";
+                CreateMenu(strip).Generate();
+
+                Invoke(FindSlider(strip, "spotify"), "OnMouseWheel", new HandledMouseEventArgs(MouseButtons.None, 0, 0, 0, 120));
+
+                Assert.False(store.Ratios.ContainsKey("spotify"));
+            });
+        }
+
+        // ---- layout ----
+
+        [Fact]
+        public void AppRows_UseTheMenuBackground_NotTransparent()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip { BackColor = System.Drawing.Color.White };
+                apps.Update(new[] { "chrome" });
+                CreateMenu(strip).Generate();
+
+                // The Material controls fill their background with the parent's color; transparent renders black.
+                var table = strip.Items.OfType<ToolStripControlHost>().Select(h => h.Control).OfType<TableLayoutPanel>().Single();
+                Assert.Equal(System.Drawing.Color.White, table.BackColor);
+                Assert.Equal(System.Drawing.Color.White, FindControl<MaterialLabel>(strip, MenuHandler.LabelName("chrome")).Parent.BackColor);
+            });
+        }
+
+        [Fact]
+        public void ExitButton_IsAtLeastAsWideAsTheAppRows()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "an-app-with-a-rather-long-executable-name" });
+                CreateMenu(strip).Generate();
+
+                var table = strip.Items.OfType<ToolStripControlHost>().Select(h => h.Control).OfType<TableLayoutPanel>().Single();
+                var exitHost = strip.Items.OfType<ToolStripControlHost>().Single(h => h.Control is MaterialButton);
+                Assert.True(exitHost.Width >= table.GetPreferredSize(System.Drawing.Size.Empty).Width);
+            });
+        }
+
+        [Fact]
+        public void AutostartToggle_DoesNotRebuildTheMenu()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "chrome" });
+                var menu = CreateMenu(strip);
+                menu.Generate();
+
+                FindCheckbox(strip, "autostart").Checked = true;
+
+                Assert.False(menu.Generate());
+            });
+        }
+
+        [Fact]
+        public void ChangeInMenu_DoesNotHideAChangeMadeElsewhere()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "chrome", "spotify" });
+                var menu = CreateMenu(strip);
+                menu.Generate();
+
+                store.Values["spotify"] = "False";
+                FindCheckbox(strip, "chrome").Checked = false;
+
+                Assert.True(menu.Generate());
+                Assert.False(FindCheckbox(strip, "spotify").Checked);
             });
         }
     }

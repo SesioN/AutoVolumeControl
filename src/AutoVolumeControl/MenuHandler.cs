@@ -15,6 +15,12 @@ namespace AutoVolumeControl
         /// <summary>How long opening the menu waits for a fresh session list before showing the cached one.</summary>
         public static readonly TimeSpan RefreshTimeout = TimeSpan.FromMilliseconds(500);
 
+        /// <summary>How often a deferred rebuild checks whether the mouse button was released.</summary>
+        internal const int DeferredRebuildPollMs = 50;
+
+        private const int ExitButtonWidth = 270;
+        private const int SliderWidth = 180;
+
         private readonly ContextMenuStrip contextMenuStrip;
         private readonly AppPreferences preferences;
         private readonly Apps apps;
@@ -22,9 +28,9 @@ namespace AutoVolumeControl
         private readonly Func<Task> refreshApps;
         private readonly AppIconCache icons;
         private readonly Func<bool> isMouseButtonDown;
+        private readonly Timer deferredRebuildTimer;
         private List<AppInfo> renderedApps = new List<AppInfo>();
         private string renderedState;
-        private bool rebuildDeferred;
         private bool draggingSlider;
 
         public event EventHandler ExitRequested;
@@ -40,16 +46,25 @@ namespace AutoVolumeControl
             this.refreshApps = refreshApps;
             this.icons = icons;
             this.isMouseButtonDown = isMouseButtonDown ?? (() => Control.MouseButtons != MouseButtons.None);
+
+            deferredRebuildTimer = new Timer { Interval = DeferredRebuildPollMs };
+            deferredRebuildTimer.Tick += DeferredRebuildTimer_Tick;
+
             this.contextMenuStrip.Opening += ContextMenuStrip_Opening;
             this.contextMenuStrip.Closing += ContextMenuStrip_Closing;
-            this.contextMenuStrip.MouseUp += OnMouseUpInMenu;
+            this.contextMenuStrip.Closed += (sender, e) => EndDrag();
+            this.contextMenuStrip.Disposed += (sender, e) => deferredRebuildTimer.Dispose();
         }
 
         /// <summary>True while a rebuild waits for the mouse button to be released.</summary>
-        internal bool RebuildDeferred => rebuildDeferred;
+        internal bool RebuildDeferred => deferredRebuildTimer.Enabled;
+
+        /// <summary>True between pressing the mouse on a slider and releasing it (or losing the mouse capture).</summary>
+        internal bool DraggingSlider => draggingSlider;
 
         private void ContextMenuStrip_Opening(object sender, System.ComponentModel.CancelEventArgs e)
         {
+            EndDrag();
             try
             {
                 refreshApps?.Invoke().Wait(RefreshTimeout);
@@ -77,32 +92,53 @@ namespace AutoVolumeControl
             var state = DescribeState(appList);
             if (state == renderedState)
             {
-                rebuildDeferred = false;
+                deferredRebuildTimer.Stop();
                 return false;
             }
 
             if (deferWhileMouseDown && contextMenuStrip.Visible && isMouseButtonDown())
             {
-                rebuildDeferred = true;
+                // Polled rather than tied to a mouse-up event: the button may be released over a separator, outside
+                // the menu or after the capture was lost, and none of these reach the hosted controls.
+                deferredRebuildTimer.Start();
                 return false;
             }
 
+            deferredRebuildTimer.Stop();
             ClearItems();
             AddHeader();
-            AddAppItems(appList);
+            var appTable = AddAppItems(appList);
             AddSeparator();
             AddAutoRunItem();
             AddSeparator();
-            AddExitItem();
-            foreach (var host in contextMenuStrip.Items.OfType<ToolStripControlHost>())
-                WatchMouseUp(host.Control);
+            AddExitItem(appTable);
             icons.Retain(appList.Select(a => a.Name));
 
             renderedApps = appList;
             renderedState = state;
-            rebuildDeferred = false;
-            draggingSlider = false;
+            EndDrag();
             return true;
+        }
+
+        /// <summary>A drag only changes the ratio in memory; the final value is written when it ends.</summary>
+        private void EndDrag()
+        {
+            draggingSlider = false;
+            preferences.CommitRatios();
+        }
+
+        private void DeferredRebuildTimer_Tick(object sender, EventArgs e)
+        {
+            if (contextMenuStrip.IsDisposed)
+            {
+                deferredRebuildTimer.Stop();
+                return;
+            }
+            if (isMouseButtonDown())
+                return;
+
+            deferredRebuildTimer.Stop();
+            Generate();
         }
 
         private string DescribeState(List<AppInfo> appList)
@@ -112,44 +148,26 @@ namespace AutoVolumeControl
             return string.Join("\n", appStates) + $"\nautostart={autoStart.IsEnabled}";
         }
 
-        /// <summary>A change made in the menu itself is already shown; it must not cause a rebuild.</summary>
-        private void OnChangedInMenu()
+        /// <summary>
+        /// Applies a change the user made in the menu. The menu already shows it, so it must not cause a rebuild;
+        /// but a change made elsewhere that the menu does not show yet still does.
+        /// </summary>
+        private void ChangeInMenu(Action change)
         {
-            renderedState = DescribeState(renderedApps);
-        }
-
-        private void OnMouseUpInMenu(object sender, MouseEventArgs e)
-        {
-            draggingSlider = false;
-            if (!rebuildDeferred || !contextMenuStrip.IsHandleCreated)
-                return;
-
-            // Not from within the handler: the rebuild disposes the control that raised the event.
-            contextMenuStrip.BeginInvoke((Action)(() =>
-            {
-                if (rebuildDeferred && !contextMenuStrip.IsDisposed)
-                    Generate();
-            }));
+            bool upToDate = DescribeState(renderedApps) == renderedState;
+            change();
+            if (upToDate)
+                renderedState = DescribeState(renderedApps);
         }
 
         /// <summary>
-        /// Keeps the menu open while a slider is dragged and the pointer leaves the menu; the slider holds the mouse
-        /// capture then, and a menu closing under it would end the drag.
+        /// Keeps the menu open when the pointer leaves it while a slider is dragged and the button is released
+        /// outside; the slider holds the mouse capture then.
         /// </summary>
         private void ContextMenuStrip_Closing(object sender, ToolStripDropDownClosingEventArgs e)
         {
-            bool closedByPointer = e.CloseReason == ToolStripDropDownCloseReason.AppClicked
-                || e.CloseReason == ToolStripDropDownCloseReason.AppFocusChange;
-            if (closedByPointer && draggingSlider && isMouseButtonDown())
+            if (e.CloseReason == ToolStripDropDownCloseReason.AppClicked && draggingSlider && isMouseButtonDown())
                 e.Cancel = true;
-        }
-
-        /// <summary>Hosted controls report mouse-ups to themselves only; every one of them ends a deferral.</summary>
-        private void WatchMouseUp(Control control)
-        {
-            control.MouseUp += OnMouseUpInMenu;
-            foreach (Control child in control.Controls)
-                WatchMouseUp(child);
         }
 
         /// <summary>Items.Clear() does not dispose the removed items; their window handles would leak.</summary>
@@ -160,6 +178,9 @@ namespace AutoVolumeControl
             foreach (var item in oldItems)
                 item.Dispose();
         }
+
+        /// <summary>Converts a size at 96 DPI to the menu's DPI (e.g. 150 % at 144 DPI).</summary>
+        private int Scale(int logicalPixels) => (int)Math.Round(logicalPixels * contextMenuStrip.DeviceDpi / 96.0);
 
         private void AddHeader()
         {
@@ -180,11 +201,14 @@ namespace AutoVolumeControl
             AddSeparator();
         }
 
-        private void AddAppItems(List<AppInfo> appList)
+        /// <returns>The table of app rows, or null if there are no apps.</returns>
+        private TableLayoutPanel AddAppItems(List<AppInfo> appList)
         {
             if (appList.Count == 0)
-                return;
+                return null;
 
+            // No transparent BackColor here: the Material controls fill their background with their parent's
+            // BackColor, and a transparent one comes out black. The table inherits the menu's color instead.
             var table = new TableLayoutPanel
             {
                 AutoSize = true,
@@ -192,7 +216,6 @@ namespace AutoVolumeControl
                 ColumnCount = 4,
                 RowCount = appList.Count,
                 Padding = new Padding(0, 10, 0, 10),
-                BackColor = Color.Transparent,
             };
             for (int column = 0; column < table.ColumnCount; column++)
                 table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -203,13 +226,8 @@ namespace AutoVolumeControl
                 AddAppRow(table, row, appList[row]);
             }
 
-            var host = new ToolStripControlHost(table)
-            {
-                AutoSize = true,
-                BackColor = Color.Transparent,
-            };
-
-            contextMenuStrip.Items.Add(host);
+            contextMenuStrip.Items.Add(new ToolStripControlHost(table) { AutoSize = true });
+            return table;
         }
 
         /// <summary>One row: checkbox, icon, name and the slider for the app's share of the master volume.</summary>
@@ -234,7 +252,7 @@ namespace AutoVolumeControl
                 Size = icons.IconSize,
                 SizeMode = PictureBoxSizeMode.CenterImage,
                 Anchor = AnchorStyles.Left,
-                Margin = new Padding(0, 0, 8, 0),
+                Margin = new Padding(0, 0, Scale(8), 0),
                 BackColor = Color.Transparent,
             };
 
@@ -244,41 +262,46 @@ namespace AutoVolumeControl
                 Text = appName,
                 AutoSize = true,
                 Anchor = AnchorStyles.Left,
-                Margin = new Padding(0, 0, 12, 0),
+                Margin = new Padding(0, 0, Scale(12), 0),
             };
 
-            var slider = new MaterialSlider
+            var slider = new RatioSlider
             {
                 Name = SliderName(appName),
-                ShowText = false,
-                Text = string.Empty,
-                ShowValue = true,
-                ValueSuffix = "%",
-                RangeMin = 0,
-                RangeMax = 100,
-                Width = 180,
+                Width = Scale(SliderWidth),
                 Anchor = AnchorStyles.Left,
                 Enabled = enabled,
             };
             slider.Value = preferences.GetRatioPercent(appName);
 
-            checkbox.CheckedChanged += (sender, e) =>
+            checkbox.CheckedChanged += (sender, e) => ChangeInMenu(() =>
             {
                 preferences.SetEnabled(appName, checkbox.Checked);
                 slider.Enabled = checkbox.Checked;
-                OnChangedInMenu();
-            };
+            });
             // The row reads as one item: clicking the icon or the name toggles the app too.
             icon.Click += (sender, e) => checkbox.Checked = !checkbox.Checked;
             label.Click += (sender, e) => checkbox.Checked = !checkbox.Checked;
-            // Raised for every step while dragging, so the app's volume follows the slider live. Unchanged values
-            // are not written, and the service merges the resulting sync requests.
-            slider.onValueChanged += (sender, value) =>
+            // Raised for every step while dragging, so the app's volume follows the slider live; the service merges
+            // the resulting sync requests. While dragging, the value is written only when the drag ends.
+            slider.RatioChanged += (sender, value) =>
+                ChangeInMenu(() => preferences.SetRatioPercent(appName, value, persist: !draggingSlider));
+            slider.MouseDown += (sender, e) =>
             {
-                preferences.SetRatioPercent(appName, value);
-                OnChangedInMenu();
+                if (e.Button == MouseButtons.Left)
+                    draggingSlider = true;
             };
-            slider.MouseDown += (sender, e) => draggingSlider = true;
+            slider.MouseUp += (sender, e) =>
+            {
+                if (draggingSlider)
+                    EndDrag();
+            };
+            // Also raised when the capture is lost without a mouse-up (e.g. Escape, Alt+Tab).
+            slider.MouseCaptureChanged += (sender, e) =>
+            {
+                if (!slider.Capture && draggingSlider)
+                    EndDrag();
+            };
 
             table.Controls.Add(checkbox, 0, row);
             table.Controls.Add(icon, 1, row);
@@ -301,7 +324,7 @@ namespace AutoVolumeControl
                 AutoSize = true,
                 Checked = autoStart.IsEnabled
             };
-            checkbox.CheckedChanged += (sender, e) => OnAutoRunCheckBoxChanged(checkbox);
+            checkbox.CheckedChanged += (sender, e) => ChangeInMenu(() => OnAutoRunCheckBoxChanged(checkbox));
 
             var host = new ToolStripControlHost(checkbox)
             {
@@ -323,7 +346,8 @@ namespace AutoVolumeControl
             }
         }
 
-        private void AddExitItem()
+        /// <param name="appTable">The app rows, if any; the button is at least as wide, so it spans the menu.</param>
+        private void AddExitItem(TableLayoutPanel appTable)
         {
             var button = new MaterialButton
             {
@@ -340,7 +364,7 @@ namespace AutoVolumeControl
                 AutoSize = false,
                 Margin = new Padding(0, 10, 0, 10),
                 BackColor = Color.Transparent,
-                Width = 270,
+                Width = Math.Max(Scale(ExitButtonWidth), appTable?.GetPreferredSize(Size.Empty).Width ?? 0),
                 Height = button.Height
             };
 

@@ -105,6 +105,17 @@ namespace AutoVolumeControl
             return path.Length == 0 ? null : path;
         }
 
+        /// <summary>
+        /// The executable of an icon path, or null if it names another file. An icon path may name a DLL with an icon
+        /// resource index; the shell would show the icon of the DLL file type for it, which is worse than the generic
+        /// application icon.
+        /// </summary>
+        public static string ExecutableFromIconPath(string iconPath)
+        {
+            var file = FileFromIconPath(iconPath);
+            return file != null && file.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? file : null;
+        }
+
         /// <summary>The raw executable path of the identifier (possibly an NT device path), or null.</summary>
         private static string ExecutableFromSessionIdentifier(string sessionIdentifier)
         {

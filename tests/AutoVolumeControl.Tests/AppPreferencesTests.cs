@@ -219,5 +219,47 @@ namespace AutoVolumeControl.Tests
 
             Assert.Equal("100", store.Ratios["chrome"]);
         }
+
+        // ---- ratio while dragging ----
+
+        [Fact]
+        public void UnpersistedRatio_TakesEffectAndRaisesChanged_ButIsWrittenOnlyOnCommit()
+        {
+            int raised = 0;
+            preferences.Changed += (s, e) => raised++;
+
+            preferences.SetRatioPercent("chrome", 70, persist: false);
+            preferences.SetRatioPercent("chrome", 60, persist: false);
+            preferences.SetRatioPercent("chrome", 60, persist: false);
+
+            Assert.Equal(60, preferences.GetRatioPercent("chrome"));
+            Assert.Equal(2, raised);
+            Assert.Empty(store.Ratios);
+
+            preferences.CommitRatios();
+
+            Assert.Equal("60", store.Ratios["chrome"]);
+            Assert.Equal(60, preferences.GetRatioPercent("chrome"));
+            Assert.Equal(2, raised);
+        }
+
+        [Fact]
+        public void PersistedRatio_ReplacesAPendingOne()
+        {
+            preferences.SetRatioPercent("chrome", 30, persist: false);
+
+            preferences.SetRatioPercent("chrome", 80);
+            preferences.CommitRatios();
+
+            Assert.Equal("80", store.Ratios["chrome"]);
+            Assert.Equal(80, preferences.GetRatioPercent("chrome"));
+        }
+
+        [Fact]
+        public void CommitRatios_WithoutPendingValues_WritesNothing()
+        {
+            preferences.CommitRatios();
+            Assert.Empty(store.Ratios);
+        }
     }
 }

@@ -107,5 +107,33 @@ namespace AutoVolumeControl.Tests
             Assert.Equal(Size, icon.Size);
             Assert.NotSame(icon, icons.GetIcon(new AppInfo("generic")));
         }
+
+        [Fact]
+        public void RealIcon_KeepsItsTransparencyAndColors()
+        {
+            using var icons = new AppIconCache(null, Size);
+            var notepad = Path.Combine(Environment.SystemDirectory, "notepad.exe");
+
+            var icon = (Bitmap)icons.GetIcon(new AppInfo("notepad", notepad));
+
+            int transparent = 0, opaque = 0, colored = 0;
+            for (int x = 0; x < icon.Width; x++)
+            {
+                for (int y = 0; y < icon.Height; y++)
+                {
+                    var pixel = icon.GetPixel(x, y);
+                    if (pixel.A == 0)
+                        transparent++;
+                    else if (pixel.A == 255)
+                        opaque++;
+                    if (pixel.A > 0 && (pixel.R > 32 || pixel.G > 32 || pixel.B > 32))
+                        colored++;
+                }
+            }
+            // Icons have transparent corners; drawing without alpha would make them black or opaque.
+            Assert.True(transparent > 0, "no transparent pixels");
+            Assert.True(opaque > 0, "no opaque pixels");
+            Assert.True(colored > 0, "only black pixels");
+        }
     }
 }

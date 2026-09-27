@@ -41,7 +41,8 @@ flowchart LR
 | `SingleInstance` | Named mutex so two instances never sync against each other. |
 | `VolumeControl` | `ApplicationContext`: owns the tray icon, context menu, settings and the service. Marshals `Apps.AppsUpdated` to the UI thread. |
 | `MenuHandler` | Builds the tray menu (one row per app: checkbox, icon, name and ratio slider; "Start with Windows"; Exit). Rebuilds only when the content changed, disposes the old items and waits while a mouse button is held down on the open menu. |
-| `AppIconCache` | UI thread only. One bitmap per app name in `SystemInformation.SmallIconSize`, read from the executable via the shell (`SHGetFileInfo`), else the generic application icon. Drops icons of apps that are no longer shown; disposed by `VolumeControl`. |
+| `AppIconCache` | UI thread only. One bitmap per app name in `SystemInformation.SmallIconSize`, read from the executable via the shell (`SHGetFileInfo`) and converted with `Icon.ToBitmap` (keeps the alpha channel), else the generic application icon. Drops icons of apps that are no longer shown; disposed by `VolumeControl`. |
+| `RatioSlider` | The 0–100 % slider of an app row: a `MaterialSlider` with a `RatioChanged` event for drag and mouse wheel, whose wheel moves the value in the expected direction. |
 | `AutoVolumeService` | Orchestrates everything audio related on the `AudioThread`: attach to the device, list apps, sync volumes, react to events. |
 | `AudioThread` | One long-lived MTA thread with a work queue. All COM objects are created, used and released there. |
 | `IAudioBackend` / `CoreAudioBackend` | Access to the default playback device via the Windows Core Audio API. Keeps one `SessionWatch` per running app session that caches its name and volume interface and forwards its events; the session list is only re-read after an event that can change it. |
@@ -52,7 +53,7 @@ flowchart LR
 | `CorrectionThrottle` | Pauses corrections for an app that keeps resetting its own volume, so the two apps cannot fight in a loop. |
 | `LogFile` | Timestamped `Trace` log in `%LOCALAPPDATA%\AutoVolumeControl` (rotated at 1 MB). |
 | `SessionNameResolver` | Single source of truth for an app's name (process name, else exe name from the session identifier, else display name, else identifier). Also turns the NT device path in a session identifier into a drive path. |
-| `ExecutableLocator` | Finds an app's executable for its icon: `QueryFullProcessImageName` with `PROCESS_QUERY_LIMITED_INFORMATION` (works for most processes, including many elevated ones), else the path in the session identifier (device prefix mapped with `QueryDosDevice`), else the session's icon path. |
+| `ExecutableLocator` | Finds an app's executable for its icon: `QueryFullProcessImageName` with `PROCESS_QUERY_LIMITED_INFORMATION` (works for most processes, including many elevated ones), else the path in the session identifier (device prefix mapped with `QueryDosDevice`), else the session's icon path if it names an `.exe` (a DLL would only give the DLL file-type icon). |
 | `Apps` | Thread-safe list of apps (`AppInfo`: name and executable, unique by name) that currently have a session; raises `AppsUpdated` on change, including when an app's executable becomes known. |
 | `AppPreferences` | Per-app enabled flag and volume ratio on top of `ISettingsStore`; new apps default to enabled and 100 %, invalid values are tolerated. |
 | `AppSettings` | `ISettingsStore` backed by `HKCU\SOFTWARE\<ProductName>` (string values), with sub-stores in subkeys. |
@@ -119,24 +120,32 @@ runs, so a burst of notifications always ends on the latest value.
 ### Menu
 `Generate()` compares a description of the content (apps, their flags and ratios, whether an icon is known,
 autostart) with the last rendered one and only rebuilds when it differs; replaced items are disposed. Changes
-made in the menu itself (checkbox, slider) update that description, so they never cause a rebuild.
+made in the menu itself (app checkbox, slider, autostart) update that description, so they do not cause a rebuild;
+a change made elsewhere that the menu does not show yet still does.
 
-Rows: `[checkbox] [icon] name  [slider 0–100 %]`. Clicking the icon or the name toggles the checkbox; the slider is
-disabled while the app is unchecked. The slider (`MaterialSlider`) raises `onValueChanged` for every step while
-dragging; each step is stored (only if the percent value changed) and the service merges the resulting sync
-requests.
+Rows: `[checkbox] [icon] name  [slider 0–100 %]` in a `TableLayoutPanel`. Clicking the icon or the name toggles the
+checkbox; the slider is disabled while the app is unchecked. The table keeps the menu's background color: the
+Material controls fill their background with their parent's color, and a transparent one renders black. The
+slider width and the spacing are scaled with the DPI; the Exit button is at least as wide as the rows.
+
+The slider (`RatioSlider`, a `MaterialSlider`) reports every step while dragging. Each step takes effect
+immediately (in memory, `AppPreferences.SetRatioPercent(..., persist: false)`, which raises `Changed`, and the
+service merges the resulting sync requests), so the app follows the slider live; the final value is written to the
+registry once when the drag ends (mouse-up, lost mouse capture, menu closed or reopened). The mouse wheel moves the
+slider by 5 % per notch (up = louder; `MaterialSlider` itself goes the other way, so `RatioSlider` replaces it)
+and is written immediately.
 
 While a mouse button is held down on the open menu, a rebuild (e.g. because an app started or exited) is
-deferred, so a slider being dragged is not destroyed. It runs after the next mouse-up in the menu (posted, not
-from within the handler), or when the menu opens next; opening always builds. While a slider is dragged, the menu
-also refuses to close because of a click or focus change outside it.
+deferred, so a slider being dragged is not destroyed. A timer checks every 50 ms whether the button was released
+(a mouse-up does not reliably reach the menu, e.g. over a separator or outside it) and then rebuilds; opening the
+menu always builds. While a slider is dragged, a click outside the menu does not close it.
 
 ## Persistence
 
 | Location | Content |
 |---|---|
 | `HKCU\SOFTWARE\AutoVolumeControl\<app>` | `"True"` / `"False"` – whether the app is synced. Written as `"True"` when an app is seen for the first time. |
-| `HKCU\SOFTWARE\AutoVolumeControl\Ratios\<app>` | Integer percent `"0"`–`"100"` (culture invariant) – the app's share of the master volume. Missing or unreadable means 100 %, out of range is clamped. A subkey, so it cannot clash with the flags. Written only when the slider is moved. |
+| `HKCU\SOFTWARE\AutoVolumeControl\Ratios\<app>` | Integer percent `"0"`–`"100"` (culture invariant) – the app's share of the master volume. Missing or unreadable means 100 %, out of range is clamped. A subkey, so it cannot clash with the flags; created on the first write. Written when a slider drag ends or the mouse wheel moves a slider. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\AutoVolumeControl` | `"<path to exe>"` when autostart is enabled. |
 
 ## Build & packaging

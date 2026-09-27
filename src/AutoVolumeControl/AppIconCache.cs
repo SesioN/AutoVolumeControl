@@ -117,21 +117,36 @@ namespace AutoVolumeControl
             return associated == null ? null : ToBitmap(associated, size);
         }
 
-        /// <summary>Draws the icon into a new bitmap of exactly the given size (DrawIcon picks the best image of the icon).</summary>
+        /// <summary>
+        /// A new bitmap of exactly the given size. <see cref="Icon.ToBitmap"/> keeps the alpha channel (drawing the icon
+        /// with GDI onto an ARGB bitmap does not reliably); an image of another size is scaled from that bitmap.
+        /// </summary>
         private static Bitmap ToBitmap(Icon icon, Size size)
         {
-            var bitmap = new Bitmap(size.Width, size.Height);
+            var bitmap = icon.ToBitmap();
+            if (bitmap.Size == size)
+                return bitmap;
+
             try
             {
-                using var graphics = Graphics.FromImage(bitmap);
-                graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                graphics.DrawIcon(icon, new Rectangle(Point.Empty, size));
-                return bitmap;
+                var scaled = new Bitmap(size.Width, size.Height);
+                try
+                {
+                    using var graphics = Graphics.FromImage(scaled);
+                    graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    graphics.DrawImage(bitmap, new Rectangle(Point.Empty, size));
+                    return scaled;
+                }
+                catch
+                {
+                    scaled.Dispose();
+                    throw;
+                }
             }
-            catch
+            finally
             {
                 bitmap.Dispose();
-                throw;
             }
         }
 
