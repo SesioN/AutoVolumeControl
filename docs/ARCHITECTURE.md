@@ -97,7 +97,7 @@ rebuilds when it differs.
 
 - `src/AutoVolumeControl` – SDK-style project targeting `net48`.
 - Costura.Fody embeds all dependencies, so the output is a single `AutoVolumeControl.exe`.
-- `app.manifest` declares supported Windows versions; `App.config` enables PerMonitorV2 DPI awareness.
+- `app.manifest` declares the supported Windows versions and system DPI awareness (sharp rendering at the primary monitor's scaling).
 - `tests/AutoVolumeControl.Tests` – xUnit tests (see README).
 
 ## Notes
