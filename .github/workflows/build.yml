@@ -1,0 +1,52 @@
+name: Build
+
+on:
+  push:
+    branches: [ master ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore AutoVolumeControl.sln
+
+      - name: Build
+        run: dotnet build AutoVolumeControl.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test AutoVolumeControl.sln -c Release --no-build --logger "console;verbosity=normal"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AutoVolumeControl
+          path: src/AutoVolumeControl/bin/Release/net48/AutoVolumeControl.exe
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: AutoVolumeControl
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: AutoVolumeControl.exe
+          generate_release_notes: true
