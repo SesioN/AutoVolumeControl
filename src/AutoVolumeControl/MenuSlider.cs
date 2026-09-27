@@ -14,6 +14,9 @@ namespace AutoVolumeControl
         // Sizes at 96 DPI and 100 %.
         private const int ThumbSize = 18;
         private const int HaloSize = 36;
+
+        /// <summary>Distance of the track from the top at 96 DPI and 100 %.</summary>
+        public const int TrackCenter = HaloSize / 2;
         private const int ActiveTrack = 6;
         private const int InactiveTrack = 4;
         private const int TickSize = 4;

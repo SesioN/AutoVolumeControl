@@ -42,7 +42,7 @@ flowchart LR
 | `CompatLayer` | Restarts the app once without DPI compatibility layers inherited from the launcher. |
 | `SingleInstance` | Named mutex so two instances never sync against each other. |
 | `VolumeControl` | `ApplicationContext`: owns the tray icon, context menu, settings and the service. Marshals `Apps.AppsUpdated` to the UI thread. |
-| `MenuHandler` | Builds the tray menu (one row per app: checkbox, icon, name and ratio slider; "Start with Windows"; "App Scale"; Exit) in the current scale. Rebuilds only when the content changed, disposes the old items and waits while a mouse button is held down on the open menu. |
+| `MenuHandler` | Builds the tray menu (title; "App Scale" bar; one row per app: checkbox, icon, name and ratio slider; "Start with Windows"; Exit) in the current scale. Rebuilds only when the content changed, disposes the old items and waits while a mouse button is held down on the open menu. |
 | `MenuScale` | The user's menu size (85/100/115/130 %, default 100 %) on top of `ISettingsStore`; invalid values are tolerated. |
 | `MenuTheme` / `MenuRenderer` / `MenuFonts` | Colors (Material light theme: indigo primary, pink accent), the renderer of the menu background, border and separators, and the fonts of one scale. |
 | `MenuCheckBox` / `MenuSlider` | Owner-drawn Material style checkbox and slider whose every size is multiplied by a `ScaleFactor`. The slider raises `ValueChangedByUser` for clicks, drags and the mouse wheel (up = higher) and can show its value or tick labels. |
@@ -140,14 +140,18 @@ registry once when the drag ends (mouse-up, lost mouse capture, menu closed or r
 slider by 5 % per notch (up = louder) and is written immediately.
 
 ### Menu size ("App Scale")
+Order: title, scale bar, apps, "Start with Windows", Exit (separated by lines; no empty app section).
+
 Everything in the menu is sized at 96 DPI and 100 % and multiplied by `DeviceDpi / 96 × MenuScale.Factor`: fonts,
-checkboxes, sliders, icons, spacing, the Exit button and so the menu itself. The "App Scale" section shows
-`App Scale: 100% (Default)` and a slider over the four sizes between a small and a large "A" (clicking a letter
-moves one step). While the slider is dragged only the caption follows it; the size is stored and the menu rebuilt
-when the slider is released, since a rebuild replaces the slider under the mouse. A click on the track or the mouse
-wheel applies immediately. The rebuild runs from the deferred-rebuild timer, never inside the slider's own event.
-When the open menu changes its size it keeps the corner nearest to where it was opened (the bottom right above the
-tray) and stays within the working area. Old fonts and icons are disposed together with the old items.
+checkboxes, sliders, icons, spacing, the Exit button and so the menu itself. The scale bar below the title is a
+slider over the four sizes (labelled 85 %–130 %) between a small and a large "A" (clicking a letter moves one
+step), drawn at 80 % of the menu's size. Like the Exit button it spans the menu: both are sized to the widest
+other item (`FitFullWidthItems`) and stretched by `FullWidthControlHost`. While the slider is dragged it only marks
+the step; the size is stored and the menu rebuilt when the slider is released, since a rebuild replaces the slider
+under the mouse. A click on the track or the mouse wheel applies immediately. The rebuild runs from the
+deferred-rebuild timer, never inside the slider's own event. When the open menu changes its size it keeps the
+corner nearest to where it was opened (the bottom right above the tray) and stays within the working area. Old
+fonts and icons are disposed together with the old items.
 
 While a mouse button is held down on the open menu, a rebuild (e.g. because an app started or exited) is
 deferred, so a slider being dragged is not destroyed. A timer checks every 50 ms whether the button was released
@@ -210,7 +214,7 @@ display, so these are checked by hand:
 2. **Menu at 100 % and 150 % display scaling:** icons are sharp and as large as the tray icon, rows are aligned,
    dragging a slider changes the app's volume live, also when the pointer leaves the menu while dragging, and
    starting or closing an app while dragging does not interrupt the drag (the menu updates after releasing).
-   "App Scale": dragging only changes the caption, releasing resizes everything (text, icons, checkboxes, sliders,
+   "App Scale": the bar spans the menu; dragging only moves the slider, releasing resizes everything (text, icons, checkboxes, sliders,
    Exit button) and the menu stays above the taskbar; the size is kept after restarting the app.
 3. **Audio service restart:** as administrator run `net stop audiosrv && net start audiosrv` while the app runs.
    Within a few seconds after the service is back the apps are listed and synced again; the log shows the

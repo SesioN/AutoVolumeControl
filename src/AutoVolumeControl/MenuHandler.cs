@@ -20,7 +20,7 @@ namespace AutoVolumeControl
         private const int ExitButtonWidth = 270;
         private const int ExitButtonHeight = 36;
         private const int SliderWidth = 180;
-        private const int ScaleSliderWidth = 200;
+        private const int ScaleSliderMinWidth = 160;
 
         private readonly ContextMenuStrip contextMenuStrip;
         private readonly AppPreferences preferences;
@@ -135,13 +135,14 @@ namespace AutoVolumeControl
                 ClearItems();
                 ApplyScale();
                 AddHeader();
-                AddAppItems(appList);
-                AddSeparator();
-                AddAutoRunItem();
-                AddSeparator();
                 AddScaleItem();
                 AddSeparator();
+                if (AddAppItems(appList))
+                    AddSeparator();
+                AddAutoRunItem();
+                AddSeparator();
                 AddExitItem();
+                FitFullWidthItems();
                 icons.Retain(appList.Select(a => a.Name));
             }
             finally
@@ -283,10 +284,11 @@ namespace AutoVolumeControl
             AddSeparator();
         }
 
-        private void AddAppItems(List<AppInfo> appList)
+        /// <returns>false if there are no apps.</returns>
+        private bool AddAppItems(List<AppInfo> appList)
         {
             if (appList.Count == 0)
-                return;
+                return false;
 
             // No transparent BackColor here: the checkboxes and sliders fill their background with their parent's
             // BackColor, and a transparent one comes out black. The table takes the menu's color instead.
@@ -311,6 +313,7 @@ namespace AutoVolumeControl
             }
 
             contextMenuStrip.Items.Add(new ToolStripControlHost(table) { AutoSize = true, Margin = Padding.Empty, ControlAlign = ContentAlignment.MiddleLeft });
+            return true;
         }
 
         /// <summary>One row: checkbox, icon, name and the slider for the app's share of the master volume.</summary>
@@ -415,22 +418,19 @@ namespace AutoVolumeControl
         }
 
         internal const string ScaleSliderName = "scale";
-        internal const string ScaleCaptionName = "scale caption";
+        internal const string ScaleBarName = "scale bar";
 
-        internal static string ScaleCaption(int percent) =>
-            $"App Scale: {percent}%" + (percent == MenuScale.DefaultPercent ? " (Default)" : string.Empty);
+        /// <summary>The scale bar is drawn this much smaller than the rest of the menu.</summary>
+        private const float ScaleBarSize = 0.8f;
 
         /// <summary>
-        /// The menu size: a caption and a slider over <see cref="MenuScale.Steps"/> between a small and a large "A".
-        /// While the slider is dragged only the caption follows it; the menu is rebuilt in the new size when the
-        /// slider is released (or the mouse wheel turned), since a rebuild replaces the slider under the mouse.
+        /// The menu size: a slider over <see cref="MenuScale.Steps"/> between a small and a large "A", spanning the
+        /// menu. The slider marks the chosen step while it is dragged; the menu is rebuilt in the new size when it is
+        /// released (a click or the mouse wheel applies at once), since a rebuild replaces the slider under the mouse.
         /// </summary>
         private void AddScaleItem()
         {
-            int percent = scale.Percent;
-            var caption = CreateLabel(ScaleCaption(percent), fonts.Body);
-            caption.Name = ScaleCaptionName;
-            caption.Margin = new Padding(Scale(9), 0, 0, Scale(2));
+            float barScale = scaleFactor * ScaleBarSize;
 
             // Clicking the letters moves one step.
             var smallIcon = CreateLabel("A", fonts.ScaleIconSmall);
@@ -440,14 +440,14 @@ namespace AutoVolumeControl
             var slider = new MenuSlider
             {
                 Name = ScaleSliderName,
-                Font = fonts.Small,
-                ScaleFactor = scaleFactor,
+                Font = fonts.Caption,
+                ScaleFactor = barScale,
                 Minimum = 0,
                 Maximum = MenuScale.Steps.Length - 1,
                 TickLabels = MenuScale.Steps.Select(s => $"{s}%").ToArray(),
-                Value = MenuScale.IndexOf(percent),
-                Width = Scale(ScaleSliderWidth),
-                Anchor = AnchorStyles.Left,
+                Value = MenuScale.IndexOf(scale.Percent),
+                Width = Scale(ScaleSliderMinWidth),
+                Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top,
             };
 
             void Apply()
@@ -464,7 +464,6 @@ namespace AutoVolumeControl
 
             slider.ValueChangedByUser += (sender, index) =>
             {
-                caption.Text = ScaleCaption(MenuScale.Steps[index]);
                 if (!slider.Dragging)
                     Apply();
             };
@@ -490,46 +489,37 @@ namespace AutoVolumeControl
             smallIcon.Click += (sender, e) => slider.ChangeValue(slider.Value - 1);
             largeIcon.Click += (sender, e) => slider.ChangeValue(slider.Value + 1);
 
-            var row = new TableLayoutPanel
+            // The letters line up with the track, above the step labels.
+            int trackCenter = MenuTheme.Scale(MenuSlider.TrackCenter, barScale);
+            int side = Scale(12);
+            smallIcon.Anchor = largeIcon.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+            smallIcon.Margin = new Padding(side, Math.Max(0, trackCenter - smallIcon.PreferredHeight / 2), Scale(2), 0);
+            largeIcon.Margin = new Padding(Scale(2), Math.Max(0, trackCenter - largeIcon.PreferredHeight / 2), side, 0);
+
+            var bar = new TableLayoutPanel
             {
+                Name = ScaleBarName,
                 BackColor = contextMenuStrip.BackColor,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                AutoSize = false,
                 ColumnCount = 3,
                 RowCount = 1,
                 Margin = Padding.Empty,
-                Padding = Padding.Empty,
+                Padding = new Padding(0, Scale(4), 0, Scale(2)),
             };
-            for (int column = 0; column < row.ColumnCount; column++)
-                row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            row.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            // The letters line up with the track, above the step labels.
-            int trackCenter = Scale(18);
-            smallIcon.Anchor = largeIcon.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-            smallIcon.Margin = new Padding(Scale(9), Math.Max(0, trackCenter - smallIcon.PreferredHeight / 2), 0, 0);
-            largeIcon.Margin = new Padding(0, Math.Max(0, trackCenter - largeIcon.PreferredHeight / 2), Scale(8), 0);
-            slider.Anchor = AnchorStyles.Left | AnchorStyles.Top;
-            row.Controls.Add(smallIcon, 0, 0);
-            row.Controls.Add(slider, 1, 0);
-            row.Controls.Add(largeIcon, 2, 0);
+            bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            bar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            bar.Controls.Add(smallIcon, 0, 0);
+            bar.Controls.Add(slider, 1, 0);
+            bar.Controls.Add(largeIcon, 2, 0);
+            bar.Height = bar.Padding.Vertical + slider.Height;
+            // Its width follows the menu (see FitFullWidthItems); the slider keeps at least its minimum width.
+            bar.MinimumSize = new Size(
+                smallIcon.PreferredWidth + smallIcon.Margin.Horizontal + slider.Width + largeIcon.PreferredWidth + largeIcon.Margin.Horizontal,
+                bar.Height);
 
-            var panel = new TableLayoutPanel
-            {
-                BackColor = contextMenuStrip.BackColor,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                ColumnCount = 1,
-                RowCount = 2,
-                Margin = Padding.Empty,
-                Padding = new Padding(0, Scale(6), 0, Scale(6)),
-            };
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            panel.Controls.Add(caption, 0, 0);
-            panel.Controls.Add(row, 0, 1);
-
-            contextMenuStrip.Items.Add(new ToolStripControlHost(panel) { AutoSize = true, Margin = Padding.Empty, ControlAlign = ContentAlignment.MiddleLeft });
+            contextMenuStrip.Items.Add(new FullWidthControlHost(bar) { AutoSize = false, Margin = Padding.Empty });
         }
 
         private void OnAutoRunCheckBoxChanged(MenuCheckBox checkbox)
@@ -545,14 +535,9 @@ namespace AutoVolumeControl
             }
         }
 
-        /// <summary>The button is as wide as the widest other item, so it spans the menu.</summary>
+        /// <summary>The button spans the menu (see <see cref="FitFullWidthItems"/>).</summary>
         private void AddExitItem()
         {
-            int contentWidth = contextMenuStrip.Items.Cast<ToolStripItem>()
-                .Select(item => item.GetPreferredSize(Size.Empty).Width + item.Margin.Horizontal)
-                .DefaultIfEmpty(0)
-                .Max();
-
             var button = new Button
             {
                 Text = "EXIT",
@@ -580,20 +565,38 @@ namespace AutoVolumeControl
                 BackColor = contextMenuStrip.BackColor,
                 Padding = new Padding(spacing),
                 Margin = Padding.Empty,
-                Width = Math.Max(Scale(ExitButtonWidth) + 2 * spacing, contentWidth),
+                Width = Scale(ExitButtonWidth) + 2 * spacing,
                 Height = button.Height + 2 * spacing,
             };
-            // The host's layout may ask the panel for its preferred size, which would otherwise be too small.
             panel.MinimumSize = panel.Size;
             panel.Controls.Add(button);
 
-            contextMenuStrip.Items.Add(new FullWidthControlHost(panel)
+            contextMenuStrip.Items.Add(new FullWidthControlHost(panel) { AutoSize = false, Margin = Padding.Empty });
+        }
+
+        /// <summary>
+        /// Makes the scale bar and the Exit button as wide as the menu: the widest other item, or the widest minimum
+        /// width of the two.
+        /// </summary>
+        private void FitFullWidthItems()
+        {
+            var items = contextMenuStrip.Items.Cast<ToolStripItem>().ToList();
+            var fullWidth = items.OfType<FullWidthControlHost>().ToList();
+            int width = items.Except(fullWidth)
+                .Select(item => item.GetPreferredSize(Size.Empty).Width + item.Margin.Horizontal)
+                .Concat(fullWidth.Select(host => host.Control.MinimumSize.Width))
+                .DefaultIfEmpty(0)
+                .Max();
+
+            foreach (var host in fullWidth)
             {
-                AutoSize = false,
-                Margin = Padding.Empty,
-                Width = panel.Width,
-                Height = panel.Height,
-            });
+                var control = host.Control;
+                // The host's layout may ask the control for its preferred size, which would otherwise be too small.
+                control.MinimumSize = new Size(width, control.Height);
+                control.Width = width;
+                host.Width = width;
+                host.Height = control.Height;
+            }
         }
 
         private void AddSeparator()

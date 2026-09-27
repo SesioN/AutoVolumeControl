@@ -763,7 +763,6 @@ namespace AutoVolumeControl.Tests
                 using var strip = new ContextMenuStrip();
                 CreateMenu(strip).Generate();
 
-                Assert.Equal("App Scale: 100% (Default)", FindNested<Label>(strip, MenuHandler.ScaleCaptionName).Text);
                 var slider = FindScaleSlider(strip);
                 Assert.Equal(1, slider.Value);
                 Assert.Equal(0, slider.Minimum);
@@ -773,10 +772,68 @@ namespace AutoVolumeControl.Tests
         }
 
         [Fact]
-        public void ScaleCaption_MarksOnlyTheDefault()
+        public void ScaleBar_IsBelowTheTitle_AboveTheApps()
         {
-            Assert.Equal("App Scale: 100% (Default)", MenuHandler.ScaleCaption(100));
-            Assert.Equal("App Scale: 115%", MenuHandler.ScaleCaption(115));
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "chrome" });
+                CreateMenu(strip).Generate();
+
+                var controls = strip.Items.Cast<ToolStripItem>()
+                    .Select(item => item is ToolStripControlHost host ? host.Control.Name : "---")
+                    .ToList();
+                Assert.Equal(new[] { "header", "---", MenuHandler.ScaleBarName, "---", MenuHandler.AppTableName, "---", "autostart", "---", "exit panel" }, controls);
+                Assert.Null(FindNested<Label>(strip, "scale caption"));
+            });
+        }
+
+        [Fact]
+        public void WithoutApps_ThereIsNoDoubleSeparator()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                CreateMenu(strip).Generate();
+
+                var items = strip.Items.Cast<ToolStripItem>().ToList();
+                for (int i = 1; i < items.Count; i++)
+                    Assert.False(items[i] is ToolStripSeparator && items[i - 1] is ToolStripSeparator);
+            });
+        }
+
+        [Fact]
+        public void ScaleBar_SpansTheMenu_LikeTheExitButton()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "an-app-with-a-rather-long-executable-name" });
+                CreateMenu(strip).Generate();
+
+                var bar = FindNested<TableLayoutPanel>(strip, MenuHandler.ScaleBarName);
+                var exitPanel = FindExitButton(strip).Parent;
+                var table = FindControl<TableLayoutPanel>(strip, MenuHandler.AppTableName);
+                Assert.Equal(exitPanel.Width, bar.Width);
+                Assert.True(bar.Width >= table.GetPreferredSize(System.Drawing.Size.Empty).Width);
+                // The slider takes the space between the letters.
+                var slider = FindScaleSlider(strip);
+                Assert.Equal(AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top, slider.Anchor);
+            });
+        }
+
+        [Fact]
+        public void ScaleBar_IsSmallerThanTheRestOfTheMenu()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "chrome" });
+                CreateMenu(strip).Generate();
+
+                Assert.True(FindScaleSlider(strip).ScaleFactor < FindSlider(strip, "chrome").ScaleFactor);
+                Assert.True(FindScaleSlider(strip).Font.Size < FindSlider(strip, "chrome").Font.Size);
+            });
         }
 
         [Fact]
@@ -853,7 +910,7 @@ namespace AutoVolumeControl.Tests
         }
 
         [Fact]
-        public void DraggingTheScaleSlider_OnlyUpdatesTheCaption_UntilReleased()
+        public void DraggingTheScaleSlider_AppliesOnlyWhenReleased()
         {
             Sta.Run(() =>
             {
@@ -867,7 +924,7 @@ namespace AutoVolumeControl.Tests
                 Drag(slider, 2);
                 Drag(slider, 3);
 
-                Assert.Equal("App Scale: 130%", FindNested<Label>(strip, MenuHandler.ScaleCaptionName).Text);
+                Assert.Equal(3, slider.Value);
                 Assert.Equal(100, scale.Percent);
                 Assert.Same(slider, FindScaleSlider(strip));
 
@@ -877,7 +934,6 @@ namespace AutoVolumeControl.Tests
                 Assert.Equal("130", ((InMemorySettingsStore)store.GetSubStore(MenuScale.StoreName)).Values[MenuScale.ValueName]);
                 Assert.True(Sta.PumpUntil(() => FindScaleSlider(strip) != slider));
                 Assert.Equal(3, FindScaleSlider(strip).Value);
-                Assert.Equal("App Scale: 130%", FindNested<Label>(strip, MenuHandler.ScaleCaptionName).Text);
                 Assert.False(menu.DraggingSlider);
             });
         }
@@ -912,7 +968,7 @@ namespace AutoVolumeControl.Tests
                 scale.SetPercent(115);
 
                 Assert.True(menu.Generate());
-                Assert.Equal("App Scale: 115%", FindNested<Label>(strip, MenuHandler.ScaleCaptionName).Text);
+                Assert.Equal(2, FindScaleSlider(strip).Value);
             });
         }
 

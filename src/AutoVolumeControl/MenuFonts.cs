@@ -11,8 +11,9 @@ namespace AutoVolumeControl
         private const float BodySize = 15;
         private const float SmallSize = 13;
         private const float ButtonSize = 14;
-        private const float ScaleIconSmallSize = 12;
-        private const float ScaleIconLargeSize = 20;
+        private const float CaptionSize = 11;
+        private const float ScaleIconSmallSize = 11;
+        private const float ScaleIconLargeSize = 17;
 
         public MenuFonts(float scale)
         {
@@ -20,6 +21,7 @@ namespace AutoVolumeControl
             Body = MenuTheme.CreateFont(BodySize, scale);
             Small = MenuTheme.CreateFont(SmallSize, scale);
             Button = MenuTheme.CreateFont(ButtonSize, scale, FontStyle.Bold);
+            Caption = MenuTheme.CreateFont(CaptionSize, scale);
             ScaleIconSmall = MenuTheme.CreateFont(ScaleIconSmallSize, scale);
             ScaleIconLarge = MenuTheme.CreateFont(ScaleIconLargeSize, scale);
         }
@@ -28,6 +30,7 @@ namespace AutoVolumeControl
         public Font Body { get; }
         public Font Small { get; }
         public Font Button { get; }
+        public Font Caption { get; }
         public Font ScaleIconSmall { get; }
         public Font ScaleIconLarge { get; }
 
@@ -37,6 +40,7 @@ namespace AutoVolumeControl
             Body.Dispose();
             Small.Dispose();
             Button.Dispose();
+            Caption.Dispose();
             ScaleIconSmall.Dispose();
             ScaleIconLarge.Dispose();
         }
