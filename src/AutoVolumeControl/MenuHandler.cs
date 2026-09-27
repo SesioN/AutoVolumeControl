@@ -5,8 +5,6 @@ using System.Drawing;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using MaterialSkin;
-using MaterialSkin.Controls;
 
 namespace AutoVolumeControl
 {
@@ -18,8 +16,11 @@ namespace AutoVolumeControl
         /// <summary>How often a deferred rebuild checks whether the mouse button was released.</summary>
         internal const int DeferredRebuildPollMs = 50;
 
+        // Sizes at 96 DPI and 100 %; everything in the menu is scaled with the display and the user's menu size.
         private const int ExitButtonWidth = 270;
+        private const int ExitButtonHeight = 36;
         private const int SliderWidth = 180;
+        private const int ScaleSliderWidth = 200;
 
         private readonly ContextMenuStrip contextMenuStrip;
         private readonly AppPreferences preferences;
@@ -27,17 +28,22 @@ namespace AutoVolumeControl
         private readonly AutoStart autoStart;
         private readonly Func<Task> refreshApps;
         private readonly AppIconCache icons;
+        private readonly MenuScale scale;
         private readonly Func<bool> isMouseButtonDown;
         private readonly Timer deferredRebuildTimer;
         private List<AppInfo> renderedApps = new List<AppInfo>();
         private string renderedState;
         private bool draggingSlider;
+        // The fonts of the current items; replaced (and the old ones disposed) together with the items.
+        private MenuFonts fonts;
+        private float scaleFactor = 1f;
 
         public event EventHandler ExitRequested;
 
         /// <param name="icons">Owned by the caller, which disposes it after the menu.</param>
+        /// <param name="scale">The user's menu size.</param>
         /// <param name="isMouseButtonDown">For tests; null reads <see cref="Control.MouseButtons"/>.</param>
-        public MenuHandler(ContextMenuStrip contextMenuStrip, AppPreferences preferences, Apps apps, AutoStart autoStart, Func<Task> refreshApps, AppIconCache icons, Func<bool> isMouseButtonDown = null)
+        public MenuHandler(ContextMenuStrip contextMenuStrip, AppPreferences preferences, Apps apps, AutoStart autoStart, Func<Task> refreshApps, AppIconCache icons, MenuScale scale, Func<bool> isMouseButtonDown = null)
         {
             this.contextMenuStrip = contextMenuStrip;
             this.preferences = preferences;
@@ -45,7 +51,13 @@ namespace AutoVolumeControl
             this.autoStart = autoStart;
             this.refreshApps = refreshApps;
             this.icons = icons;
+            this.scale = scale;
             this.isMouseButtonDown = isMouseButtonDown ?? (() => Control.MouseButtons != MouseButtons.None);
+
+            contextMenuStrip.Renderer = new MenuRenderer();
+            contextMenuStrip.ShowImageMargin = false;
+            contextMenuStrip.ShowCheckMargin = false;
+            contextMenuStrip.BackColor = MenuTheme.Background;
 
             deferredRebuildTimer = new Timer { Interval = DeferredRebuildPollMs };
             deferredRebuildTimer.Tick += DeferredRebuildTimer_Tick;
@@ -53,7 +65,13 @@ namespace AutoVolumeControl
             this.contextMenuStrip.Opening += ContextMenuStrip_Opening;
             this.contextMenuStrip.Closing += ContextMenuStrip_Closing;
             this.contextMenuStrip.Closed += (sender, e) => EndDrag();
-            this.contextMenuStrip.Disposed += (sender, e) => deferredRebuildTimer.Dispose();
+            this.contextMenuStrip.Disposed += (sender, e) =>
+            {
+                deferredRebuildTimer.Dispose();
+                // The items are disposed with the menu; their fonts only now.
+                fonts?.Dispose();
+                fonts = null;
+            };
         }
 
         /// <summary>True while a rebuild waits for the mouse button to be released.</summary>
@@ -61,6 +79,9 @@ namespace AutoVolumeControl
 
         /// <summary>True between pressing the mouse on a slider and releasing it (or losing the mouse capture).</summary>
         internal bool DraggingSlider => draggingSlider;
+
+        /// <summary>Display scaling times the user's menu size, as used by the current items.</summary>
+        internal float ScaleFactor => scaleFactor;
 
         private void ContextMenuStrip_Opening(object sender, System.ComponentModel.CancelEventArgs e)
         {
@@ -105,19 +126,72 @@ namespace AutoVolumeControl
             }
 
             deferredRebuildTimer.Stop();
-            ClearItems();
-            AddHeader();
-            var appTable = AddAppItems(appList);
-            AddSeparator();
-            AddAutoRunItem();
-            AddSeparator();
-            AddExitItem(appTable);
-            icons.Retain(appList.Select(a => a.Name));
+            bool visible = contextMenuStrip.Visible;
+            var oldBounds = contextMenuStrip.Bounds;
+
+            contextMenuStrip.SuspendLayout();
+            try
+            {
+                ClearItems();
+                ApplyScale();
+                AddHeader();
+                AddAppItems(appList);
+                AddSeparator();
+                AddAutoRunItem();
+                AddSeparator();
+                AddScaleItem();
+                AddSeparator();
+                AddExitItem();
+                icons.Retain(appList.Select(a => a.Name));
+            }
+            finally
+            {
+                contextMenuStrip.ResumeLayout();
+            }
 
             renderedApps = appList;
             renderedState = state;
             EndDrag();
+            if (visible)
+                KeepOnScreen(oldBounds);
             return true;
+        }
+
+        /// <summary>
+        /// Takes the scale for the new items from the display and the user's menu size. Called after the old items
+        /// were disposed: the old fonts and icons are released here.
+        /// </summary>
+        private void ApplyScale()
+        {
+            scaleFactor = contextMenuStrip.DeviceDpi / 96f * scale.Factor;
+
+            fonts?.Dispose();
+            fonts = new MenuFonts(scaleFactor);
+
+            var small = SystemInformation.SmallIconSize;
+            icons.SetIconSize(new Size(
+                (int)Math.Round(small.Width * scale.Factor),
+                (int)Math.Round(small.Height * scale.Factor)));
+
+            contextMenuStrip.Padding = new Padding(Scale(2), Scale(4), Scale(2), Scale(4));
+        }
+
+        /// <summary>
+        /// A menu that changed its size while open grows from the corner nearest to where it was opened, e.g. upwards
+        /// from the tray, and stays on the screen.
+        /// </summary>
+        private void KeepOnScreen(Rectangle oldBounds)
+        {
+            var size = contextMenuStrip.Size;
+            if (size == oldBounds.Size)
+                return;
+
+            var area = Screen.FromRectangle(oldBounds).WorkingArea;
+            int x = oldBounds.Left + oldBounds.Width / 2 > area.Left + area.Width / 2 ? oldBounds.Right - size.Width : oldBounds.Left;
+            int y = oldBounds.Top + oldBounds.Height / 2 > area.Top + area.Height / 2 ? oldBounds.Bottom - size.Height : oldBounds.Top;
+            x = Math.Max(area.Left, Math.Min(x, area.Right - size.Width));
+            y = Math.Max(area.Top, Math.Min(y, area.Bottom - size.Height));
+            contextMenuStrip.Location = new Point(x, y);
         }
 
         /// <summary>A drag only changes the ratio in memory; the final value is written when it ends.</summary>
@@ -145,7 +219,7 @@ namespace AutoVolumeControl
         {
             var appStates = appList.Select(a =>
                 $"{a.Name}={preferences.IsEnabled(a.Name)};ratio={preferences.GetRatioPercent(a.Name)};icon={a.ExecutablePath != null}");
-            return string.Join("\n", appStates) + $"\nautostart={autoStart.IsEnabled}";
+            return string.Join("\n", appStates) + $"\nautostart={autoStart.IsEnabled}\nscale={scale.Percent};dpi={contextMenuStrip.DeviceDpi}";
         }
 
         /// <summary>
@@ -179,43 +253,53 @@ namespace AutoVolumeControl
                 item.Dispose();
         }
 
-        /// <summary>Converts a size at 96 DPI to the menu's DPI (e.g. 150 % at 144 DPI).</summary>
-        private int Scale(int logicalPixels) => (int)Math.Round(logicalPixels * contextMenuStrip.DeviceDpi / 96.0);
+        /// <summary>Converts a size at 96 DPI and 100 % to the menu's size (e.g. 173 % at 150 % display scaling and 115 %).</summary>
+        private int Scale(int logicalPixels) => MenuTheme.Scale(logicalPixels, scaleFactor);
+
+        private Label CreateLabel(string text, Font font, Color? color = null)
+        {
+            return new Label
+            {
+                Text = text,
+                Font = font,
+                ForeColor = color ?? MenuTheme.Text,
+                AutoSize = true,
+                UseMnemonic = false,
+                Margin = Padding.Empty,
+                Anchor = AnchorStyles.Left,
+            };
+        }
 
         private void AddHeader()
         {
-            var label = new MaterialLabel
-            {
-                Text = $"{Application.ProductName} (v{Application.ProductVersion})",
-                AutoSize = true,
-                FontType = MaterialSkinManager.fontType.H6
-            };
+            var label = CreateLabel($"{Application.ProductName} (v{Application.ProductVersion})", fonts.Header);
+            label.Name = "header";
+            // Spacing inside the controls hosted directly in the menu: the menu's layout does not reliably honor margins.
+            label.Padding = new Padding(Scale(10), Scale(8), Scale(12), Scale(8));
+            label.BackColor = contextMenuStrip.BackColor;
 
-            var host = new ToolStripControlHost(label)
-            {
-                BackColor = Color.Transparent,
-                Margin = new Padding(0, 5, 0, 5)
-            };
-            contextMenuStrip.Items.Add(host);
+            contextMenuStrip.Items.Add(new ToolStripControlHost(label) { Margin = Padding.Empty, ControlAlign = ContentAlignment.MiddleLeft });
 
             AddSeparator();
         }
 
-        /// <returns>The table of app rows, or null if there are no apps.</returns>
-        private TableLayoutPanel AddAppItems(List<AppInfo> appList)
+        private void AddAppItems(List<AppInfo> appList)
         {
             if (appList.Count == 0)
-                return null;
+                return;
 
-            // No transparent BackColor here: the Material controls fill their background with their parent's
-            // BackColor, and a transparent one comes out black. The table inherits the menu's color instead.
+            // No transparent BackColor here: the checkboxes and sliders fill their background with their parent's
+            // BackColor, and a transparent one comes out black. The table takes the menu's color instead.
             var table = new TableLayoutPanel
             {
+                BackColor = contextMenuStrip.BackColor,
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 ColumnCount = 4,
                 RowCount = appList.Count,
-                Padding = new Padding(0, 10, 0, 10),
+                Name = AppTableName,
+                Padding = new Padding(0, Scale(4), Scale(8), Scale(4)),
+                Margin = Padding.Empty,
             };
             for (int column = 0; column < table.ColumnCount; column++)
                 table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -226,8 +310,7 @@ namespace AutoVolumeControl
                 AddAppRow(table, row, appList[row]);
             }
 
-            contextMenuStrip.Items.Add(new ToolStripControlHost(table) { AutoSize = true });
-            return table;
+            contextMenuStrip.Items.Add(new ToolStripControlHost(table) { AutoSize = true, Margin = Padding.Empty, ControlAlign = ContentAlignment.MiddleLeft });
         }
 
         /// <summary>One row: checkbox, icon, name and the slider for the app's share of the master volume.</summary>
@@ -236,12 +319,13 @@ namespace AutoVolumeControl
             var appName = app.Name;
             bool enabled = preferences.IsEnabled(appName);
 
-            var checkbox = new MaterialCheckbox
+            var checkbox = new MenuCheckBox
             {
                 Text = string.Empty,
                 Name = appName,
                 Checked = enabled,
-                AutoSize = true,
+                Font = fonts.Body,
+                ScaleFactor = scaleFactor,
                 Anchor = AnchorStyles.Left,
             };
 
@@ -256,18 +340,15 @@ namespace AutoVolumeControl
                 BackColor = Color.Transparent,
             };
 
-            var label = new MaterialLabel
-            {
-                Name = LabelName(appName),
-                Text = appName,
-                AutoSize = true,
-                Anchor = AnchorStyles.Left,
-                Margin = new Padding(0, 0, Scale(12), 0),
-            };
+            var label = CreateLabel(appName, fonts.Body);
+            label.Name = LabelName(appName);
+            label.Margin = new Padding(0, 0, Scale(12), 0);
 
             var slider = new RatioSlider
             {
                 Name = SliderName(appName),
+                Font = fonts.Small,
+                ScaleFactor = scaleFactor,
                 Width = Scale(SliderWidth),
                 Anchor = AnchorStyles.Left,
                 Enabled = enabled,
@@ -284,7 +365,7 @@ namespace AutoVolumeControl
             label.Click += (sender, e) => checkbox.Checked = !checkbox.Checked;
             // Raised for every step while dragging, so the app's volume follows the slider live; the service merges
             // the resulting sync requests. While dragging, the value is written only when the drag ends.
-            slider.RatioChanged += (sender, value) =>
+            slider.ValueChangedByUser += (sender, value) =>
                 ChangeInMenu(() => preferences.SetRatioPercent(appName, value, persist: !draggingSlider));
             slider.MouseDown += (sender, e) =>
             {
@@ -309,6 +390,8 @@ namespace AutoVolumeControl
             table.Controls.Add(slider, 3, row);
         }
 
+        internal const string AppTableName = "apps";
+
         internal static string IconName(string appName) => "icon:" + appName;
 
         internal static string LabelName(string appName) => "name:" + appName;
@@ -317,23 +400,139 @@ namespace AutoVolumeControl
 
         private void AddAutoRunItem()
         {
-            var checkbox = new MaterialCheckbox
+            var checkbox = new MenuCheckBox
             {
                 Text = "Start with Windows",
                 Name = "autostart",
-                AutoSize = true,
-                Checked = autoStart.IsEnabled
+                Font = fonts.Body,
+                ScaleFactor = scaleFactor,
+                Checked = autoStart.IsEnabled,
+                BackColor = contextMenuStrip.BackColor,
             };
             checkbox.CheckedChanged += (sender, e) => ChangeInMenu(() => OnAutoRunCheckBoxChanged(checkbox));
 
-            var host = new ToolStripControlHost(checkbox)
-            {
-                BackColor = Color.Transparent
-            };
-            contextMenuStrip.Items.Add(host);
+            contextMenuStrip.Items.Add(new ToolStripControlHost(checkbox) { Margin = Padding.Empty, ControlAlign = ContentAlignment.MiddleLeft });
         }
 
-        private void OnAutoRunCheckBoxChanged(MaterialCheckbox checkbox)
+        internal const string ScaleSliderName = "scale";
+        internal const string ScaleCaptionName = "scale caption";
+
+        internal static string ScaleCaption(int percent) =>
+            $"App Scale: {percent}%" + (percent == MenuScale.DefaultPercent ? " (Default)" : string.Empty);
+
+        /// <summary>
+        /// The menu size: a caption and a slider over <see cref="MenuScale.Steps"/> between a small and a large "A".
+        /// While the slider is dragged only the caption follows it; the menu is rebuilt in the new size when the
+        /// slider is released (or the mouse wheel turned), since a rebuild replaces the slider under the mouse.
+        /// </summary>
+        private void AddScaleItem()
+        {
+            int percent = scale.Percent;
+            var caption = CreateLabel(ScaleCaption(percent), fonts.Body);
+            caption.Name = ScaleCaptionName;
+            caption.Margin = new Padding(Scale(9), 0, 0, Scale(2));
+
+            // Clicking the letters moves one step.
+            var smallIcon = CreateLabel("A", fonts.ScaleIconSmall);
+            var largeIcon = CreateLabel("A", fonts.ScaleIconLarge);
+            smallIcon.Cursor = largeIcon.Cursor = Cursors.Hand;
+
+            var slider = new MenuSlider
+            {
+                Name = ScaleSliderName,
+                Font = fonts.Small,
+                ScaleFactor = scaleFactor,
+                Minimum = 0,
+                Maximum = MenuScale.Steps.Length - 1,
+                TickLabels = MenuScale.Steps.Select(s => $"{s}%").ToArray(),
+                Value = MenuScale.IndexOf(percent),
+                Width = Scale(ScaleSliderWidth),
+                Anchor = AnchorStyles.Left,
+            };
+
+            void Apply()
+            {
+                int chosen = MenuScale.Steps[slider.Value];
+                if (chosen == scale.Percent)
+                    return;
+
+                scale.SetPercent(chosen);
+                // Not from within the slider's own event, which the rebuild would dispose: the deferred rebuild
+                // runs right after it (and after the mouse button was released).
+                deferredRebuildTimer.Start();
+            }
+
+            slider.ValueChangedByUser += (sender, index) =>
+            {
+                caption.Text = ScaleCaption(MenuScale.Steps[index]);
+                if (!slider.Dragging)
+                    Apply();
+            };
+            slider.MouseDown += (sender, e) =>
+            {
+                if (e.Button == MouseButtons.Left)
+                    draggingSlider = true;
+            };
+            slider.MouseUp += (sender, e) =>
+            {
+                if (draggingSlider)
+                    EndDrag();
+                Apply();
+            };
+            slider.MouseCaptureChanged += (sender, e) =>
+            {
+                if (slider.Capture)
+                    return;
+                if (draggingSlider)
+                    EndDrag();
+                Apply();
+            };
+            smallIcon.Click += (sender, e) => slider.ChangeValue(slider.Value - 1);
+            largeIcon.Click += (sender, e) => slider.ChangeValue(slider.Value + 1);
+
+            var row = new TableLayoutPanel
+            {
+                BackColor = contextMenuStrip.BackColor,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 3,
+                RowCount = 1,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+            };
+            for (int column = 0; column < row.ColumnCount; column++)
+                row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            row.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            // The letters line up with the track, above the step labels.
+            int trackCenter = Scale(18);
+            smallIcon.Anchor = largeIcon.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+            smallIcon.Margin = new Padding(Scale(9), Math.Max(0, trackCenter - smallIcon.PreferredHeight / 2), 0, 0);
+            largeIcon.Margin = new Padding(0, Math.Max(0, trackCenter - largeIcon.PreferredHeight / 2), Scale(8), 0);
+            slider.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+            row.Controls.Add(smallIcon, 0, 0);
+            row.Controls.Add(slider, 1, 0);
+            row.Controls.Add(largeIcon, 2, 0);
+
+            var panel = new TableLayoutPanel
+            {
+                BackColor = contextMenuStrip.BackColor,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                RowCount = 2,
+                Margin = Padding.Empty,
+                Padding = new Padding(0, Scale(6), 0, Scale(6)),
+            };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            panel.Controls.Add(caption, 0, 0);
+            panel.Controls.Add(row, 0, 1);
+
+            contextMenuStrip.Items.Add(new ToolStripControlHost(panel) { AutoSize = true, Margin = Padding.Empty, ControlAlign = ContentAlignment.MiddleLeft });
+        }
+
+        private void OnAutoRunCheckBoxChanged(MenuCheckBox checkbox)
         {
             try
             {
@@ -346,38 +545,81 @@ namespace AutoVolumeControl
             }
         }
 
-        /// <param name="appTable">The app rows, if any; the button is at least as wide, so it spans the menu.</param>
-        private void AddExitItem(TableLayoutPanel appTable)
+        /// <summary>The button is as wide as the widest other item, so it spans the menu.</summary>
+        private void AddExitItem()
         {
-            var button = new MaterialButton
+            int contentWidth = contextMenuStrip.Items.Cast<ToolStripItem>()
+                .Select(item => item.GetPreferredSize(Size.Empty).Width + item.Margin.Horizontal)
+                .DefaultIfEmpty(0)
+                .Max();
+
+            var button = new Button
             {
-                Text = "Exit",
+                Text = "EXIT",
                 Name = "exit",
+                Font = fonts.Button,
+                ForeColor = Color.White,
+                BackColor = MenuTheme.Primary,
+                FlatStyle = FlatStyle.Flat,
+                UseVisualStyleBackColor = false,
+                UseMnemonic = false,
+                Cursor = Cursors.Hand,
                 AutoSize = false,
                 Dock = DockStyle.Fill,
-                Height = 36
+                Height = Scale(ExitButtonHeight),
             };
+            button.FlatAppearance.BorderSize = 0;
+            button.FlatAppearance.MouseOverBackColor = MenuTheme.PrimaryHover;
+            button.FlatAppearance.MouseDownBackColor = MenuTheme.PrimaryHover;
             button.Click += (sender, e) => ExitRequested?.Invoke(this, EventArgs.Empty);
 
-            var host = new ToolStripControlHost(button)
+            int spacing = Scale(8);
+            var panel = new Panel
+            {
+                Name = "exit panel",
+                BackColor = contextMenuStrip.BackColor,
+                Padding = new Padding(spacing),
+                Margin = Padding.Empty,
+                Width = Math.Max(Scale(ExitButtonWidth) + 2 * spacing, contentWidth),
+                Height = button.Height + 2 * spacing,
+            };
+            // The host's layout may ask the panel for its preferred size, which would otherwise be too small.
+            panel.MinimumSize = panel.Size;
+            panel.Controls.Add(button);
+
+            contextMenuStrip.Items.Add(new FullWidthControlHost(panel)
             {
                 AutoSize = false,
-                Margin = new Padding(0, 10, 0, 10),
-                BackColor = Color.Transparent,
-                Width = Math.Max(Scale(ExitButtonWidth), appTable?.GetPreferredSize(Size.Empty).Width ?? 0),
-                Height = button.Height
-            };
-
-            contextMenuStrip.Items.Add(host);
+                Margin = Padding.Empty,
+                Width = panel.Width,
+                Height = panel.Height,
+            });
         }
 
         private void AddSeparator()
         {
             contextMenuStrip.Items.Add(new ToolStripSeparator
             {
-                Margin = new Padding(0),
-                BackColor = Color.Transparent
+                Margin = new Padding(0, Scale(2), 0, Scale(2)),
             });
+        }
+    }
+
+    /// <summary>
+    /// Hosts a control that spans the menu: the menu gives all items its width, but a plain host only aligns its
+    /// control in it.
+    /// </summary>
+    sealed class FullWidthControlHost : ToolStripControlHost
+    {
+        public FullWidthControlHost(Control control) : base(control)
+        {
+        }
+
+        protected override void OnBoundsChanged()
+        {
+            if (Control != null && !Control.IsDisposed)
+                Control.Width = Math.Max(Control.MinimumSize.Width, Width - Padding.Horizontal);
+            base.OnBoundsChanged();
         }
     }
 }

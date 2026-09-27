@@ -10,8 +10,8 @@
   </trustInfo>
 
   <!-- System DPI aware: rendered sharp at the scaling of the primary monitor. Without this Windows
-       bitmap-stretches the menu, which looks large and blurry at 150 %. The MaterialSkin menu does not
-       rescale itself, so per-monitor awareness would not improve it. -->
+       bitmap-stretches the menu, which looks large and blurry at 150 %. The menu does not rescale itself
+       on DPI changes, so per-monitor awareness would not improve it. -->
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>

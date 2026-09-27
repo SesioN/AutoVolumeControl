@@ -9,6 +9,8 @@ with the master volume of the default playback device.
 - New apps are synced by default and as soon as they start playing audio.
 - Follows changes of the default playback device.
 - Optional "Start with Windows".
+- "App Scale" makes the whole menu (text, icons, checkboxes, sliders, spacing) 85 %, 100 %, 115 % or 130 % of
+  its normal size, on top of the Windows display scaling; the choice is remembered.
 
 ## Requirements
 

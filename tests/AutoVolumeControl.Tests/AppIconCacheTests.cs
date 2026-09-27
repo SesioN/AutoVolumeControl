@@ -33,6 +33,38 @@ namespace AutoVolumeControl.Tests
         }
 
         [Fact]
+        public void NewIconSize_ExtractsAgainInThatSize_AndReleasesTheOldIcons()
+        {
+            using var icons = Create();
+            var small = icons.GetIcon(new AppInfo("chrome", @"C:\chrome.exe"));
+            var genericSmall = icons.GetIcon(new AppInfo("unknown"));
+
+            icons.SetIconSize(new Size(32, 32));
+            var large = icons.GetIcon(new AppInfo("chrome", @"C:\chrome.exe"));
+            var genericLarge = icons.GetIcon(new AppInfo("unknown"));
+
+            Assert.Equal(2, extractions);
+            Assert.Equal(new Size(32, 32), icons.IconSize);
+            Assert.Equal(new Size(32, 32), large.Size);
+            Assert.Equal(new Size(32, 32), genericLarge.Size);
+            // Disposed bitmaps throw on access.
+            Assert.Throws<ArgumentException>(() => small.Width);
+            Assert.Throws<ArgumentException>(() => genericSmall.Width);
+        }
+
+        [Fact]
+        public void SameIconSize_KeepsTheCachedIcons()
+        {
+            using var icons = Create();
+            var first = icons.GetIcon(new AppInfo("chrome", @"C:\chrome.exe"));
+
+            icons.SetIconSize(Size);
+
+            Assert.Same(first, icons.GetIcon(new AppInfo("chrome", @"C:\chrome.exe")));
+            Assert.Equal(1, extractions);
+        }
+
+        [Fact]
         public void UnknownExecutable_GetsTheSharedGenericIcon()
         {
             using var icons = Create();

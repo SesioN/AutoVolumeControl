@@ -2,7 +2,6 @@ using System;
 using System.Drawing;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using MaterialSkin.Controls;
 
 namespace AutoVolumeControl
 {
@@ -39,7 +38,7 @@ namespace AutoVolumeControl
             var preferences = new AppPreferences(appSettings);
             apps = new Apps();
 
-            contextMenuStrip = new MaterialContextMenuStrip();
+            contextMenuStrip = new ContextMenuStrip();
             notifyIcon = new NotifyIcon
             {
                 Icon = LoadIcon(),
@@ -50,7 +49,7 @@ namespace AutoVolumeControl
 
             service = new AutoVolumeService(backend, preferences, apps, retryInterval);
             icons = new AppIconCache();
-            menuHandler = new MenuHandler(contextMenuStrip, preferences, apps, autoStart, service.RefreshAsync, icons);
+            menuHandler = new MenuHandler(contextMenuStrip, preferences, apps, autoStart, service.RefreshAsync, icons, new MenuScale(appSettings));
             // Exit from the button's click handler would dispose the menu while it is still processing the click.
             menuHandler.ExitRequested += (sender, e) => RunOnUiThread(() => Exit(sender, e));
             apps.AppsUpdated += OnAppsUpdated;

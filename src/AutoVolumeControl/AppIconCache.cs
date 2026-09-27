@@ -10,9 +10,10 @@ using System.Windows.Forms;
 namespace AutoVolumeControl
 {
     /// <summary>
-    /// The small icons of the apps in the menu, one bitmap per app name, in <see cref="SystemInformation.SmallIconSize"/>
-    /// (e.g. 24x24 at 150 %) so they are as sharp as the tray icon. Apps without a known executable, or whose icon
-    /// cannot be read, get the generic Windows application icon. UI thread only.
+    /// The icons of the apps in the menu, one bitmap per app name, in <see cref="IconSize"/>: by default
+    /// <see cref="SystemInformation.SmallIconSize"/> (e.g. 24x24 at 150 %) so they are as sharp as the tray icon, larger
+    /// or smaller with the user's menu size. Apps without a known executable, or whose icon cannot be read, get the
+    /// generic Windows application icon. UI thread only.
     /// </summary>
     sealed class AppIconCache : IDisposable
     {
@@ -33,7 +34,21 @@ namespace AutoVolumeControl
             IconSize = size ?? SystemInformation.SmallIconSize;
         }
 
-        public Size IconSize { get; }
+        public Size IconSize { get; private set; }
+
+        /// <summary>
+        /// Changes the size of the icons. Drops the cached bitmaps if it changed, so callers must no longer show them.
+        /// </summary>
+        public void SetIconSize(Size size)
+        {
+            if (disposed)
+                throw new ObjectDisposedException(nameof(AppIconCache));
+            if (size == IconSize || size.Width <= 0 || size.Height <= 0)
+                return;
+
+            DisposeBitmaps();
+            IconSize = size;
+        }
 
         /// <summary>
         /// The icon of the app, or the generic icon. The bitmap belongs to the cache: callers must not dispose it,
@@ -95,11 +110,16 @@ namespace AutoVolumeControl
             return fallback;
         }
 
-        /// <summary>The shell's small icon of the file, as shown in Explorer, else the icon Windows associates with it.</summary>
+        /// <summary>
+        /// The shell's icon of the file, as shown in Explorer, else the icon Windows associates with it. The small
+        /// icon up to its size, above it the large one scaled down, so enlarged icons stay sharp.
+        /// </summary>
         private static Bitmap ExtractIcon(string path, Size size)
         {
             var info = new ShFileInfo();
-            var result = SHGetFileInfo(path, 0, ref info, (uint)Marshal.SizeOf<ShFileInfo>(), ShgfiIcon | ShgfiSmallIcon);
+            var small = SystemInformation.SmallIconSize;
+            uint iconSize = size.Width > small.Width || size.Height > small.Height ? ShgfiLargeIcon : ShgfiSmallIcon;
+            var result = SHGetFileInfo(path, 0, ref info, (uint)Marshal.SizeOf<ShFileInfo>(), ShgfiIcon | iconSize);
             if (result != IntPtr.Zero && info.IconHandle != IntPtr.Zero)
             {
                 try
@@ -156,6 +176,11 @@ namespace AutoVolumeControl
                 return;
 
             disposed = true;
+            DisposeBitmaps();
+        }
+
+        private void DisposeBitmaps()
+        {
             foreach (var entry in entries.Values)
                 entry.Bitmap?.Dispose();
             entries.Clear();
@@ -179,6 +204,7 @@ namespace AutoVolumeControl
 
         private const uint ShgfiIcon = 0x100;
         private const uint ShgfiSmallIcon = 0x1;
+        private const uint ShgfiLargeIcon = 0x0;
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         private struct ShFileInfo

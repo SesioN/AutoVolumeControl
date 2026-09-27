@@ -6,7 +6,6 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using MaterialSkin.Controls;
 using Xunit;
 
 namespace AutoVolumeControl.Tests
@@ -19,11 +18,13 @@ namespace AutoVolumeControl.Tests
         private readonly Apps apps = new Apps();
         private readonly AutoStart autoStart;
         private readonly AppIconCache icons = new AppIconCache();
+        private readonly MenuScale scale;
         private bool mouseButtonDown;
 
         public MenuHandlerTests()
         {
             preferences = new AppPreferences(store);
+            scale = new MenuScale(store);
             autoStart = new AutoStart("AutoVolumeControl", @"C:\Apps\AutoVolumeControl.exe", runKey.Path);
         }
 
@@ -35,7 +36,7 @@ namespace AutoVolumeControl.Tests
 
         private MenuHandler CreateMenu(ContextMenuStrip strip, Func<Task> refresh = null)
         {
-            return new MenuHandler(strip, preferences, apps, autoStart, refresh ?? (() => Task.CompletedTask), icons, () => mouseButtonDown);
+            return new MenuHandler(strip, preferences, apps, autoStart, refresh ?? (() => Task.CompletedTask), icons, scale, () => mouseButtonDown);
         }
 
         private static T FindControl<T>(ContextMenuStrip strip, string name) where T : Control
@@ -46,7 +47,25 @@ namespace AutoVolumeControl.Tests
                 .SingleOrDefault(c => c.Name == name);
         }
 
-        private static MaterialSlider FindSlider(ContextMenuStrip strip, string app) => FindControl<MaterialSlider>(strip, MenuHandler.SliderName(app));
+        private static T FindNested<T>(ContextMenuStrip strip, string name) where T : Control
+        {
+            return strip.Items.OfType<ToolStripControlHost>()
+                .SelectMany(h => Descendants(h.Control))
+                .OfType<T>()
+                .SingleOrDefault(c => c.Name == name);
+        }
+
+        private static System.Collections.Generic.IEnumerable<Control> Descendants(Control control)
+        {
+            yield return control;
+            foreach (Control child in control.Controls)
+                foreach (var descendant in Descendants(child))
+                    yield return descendant;
+        }
+
+        private static RatioSlider FindSlider(ContextMenuStrip strip, string app) => FindControl<RatioSlider>(strip, MenuHandler.SliderName(app));
+
+        private static MenuSlider FindScaleSlider(ContextMenuStrip strip) => FindNested<MenuSlider>(strip, MenuHandler.ScaleSliderName);
 
         private static void Invoke(Control control, string method, EventArgs args)
         {
@@ -60,25 +79,20 @@ namespace AutoVolumeControl.Tests
             return args;
         }
 
-        /// <summary>Raises the slider's value event the way dragging does (setting Value does not raise it).</summary>
-        private static void Drag(MaterialSlider slider, int value)
-        {
-            slider.Value = value;
-            var field = typeof(MaterialSlider).GetField("onValueChanged", BindingFlags.Instance | BindingFlags.NonPublic);
-            ((MaterialSlider.ValueChanged)field.GetValue(slider))?.Invoke(slider, value);
-        }
+        /// <summary>Changes the slider's value the way dragging does (setting Value does not raise the event).</summary>
+        private static void Drag(MenuSlider slider, int value) => slider.ChangeValue(value);
 
-        private static MaterialCheckbox FindCheckbox(ContextMenuStrip strip, string name)
+        private static MenuCheckBox FindCheckbox(ContextMenuStrip strip, string name)
         {
             return strip.Items.OfType<ToolStripControlHost>()
                 .SelectMany(h => new[] { h.Control }.Concat(h.Control.Controls.Cast<Control>()))
-                .OfType<MaterialCheckbox>()
+                .OfType<MenuCheckBox>()
                 .SingleOrDefault(c => c.Name == name);
         }
 
-        private static MaterialButton FindExitButton(ContextMenuStrip strip)
+        private static Button FindExitButton(ContextMenuStrip strip)
         {
-            return strip.Items.OfType<ToolStripControlHost>().Select(h => h.Control).OfType<MaterialButton>().Single();
+            return FindControl<Button>(strip, "exit");
         }
 
         /// <summary>
@@ -107,7 +121,7 @@ namespace AutoVolumeControl.Tests
                 Assert.True(FindCheckbox(strip, "chrome").Checked);
                 Assert.False(FindCheckbox(strip, "spotify").Checked);
                 Assert.Equal("", FindCheckbox(strip, "chrome").Text);
-                Assert.Equal("chrome", FindControl<MaterialLabel>(strip, MenuHandler.LabelName("chrome")).Text);
+                Assert.Equal("chrome", FindControl<Label>(strip, MenuHandler.LabelName("chrome")).Text);
             });
         }
 
@@ -122,7 +136,7 @@ namespace AutoVolumeControl.Tests
 
                 Assert.NotNull(FindCheckbox(strip, "autostart"));
                 Assert.NotNull(FindExitButton(strip));
-                Assert.DoesNotContain(strip.Items.OfType<ToolStripControlHost>(), h => h.Control is TableLayoutPanel);
+                Assert.Null(FindControl<TableLayoutPanel>(strip, MenuHandler.AppTableName));
             });
         }
 
@@ -385,7 +399,7 @@ namespace AutoVolumeControl.Tests
                 apps.Update(new[] { "chrome" });
                 CreateMenu(strip).Generate();
 
-                InvokeOnClick(FindControl<MaterialLabel>(strip, MenuHandler.LabelName("chrome")));
+                InvokeOnClick(FindControl<Label>(strip, MenuHandler.LabelName("chrome")));
                 Assert.False(FindCheckbox(strip, "chrome").Checked);
                 Assert.Equal("False", store.Values["chrome"]);
 
@@ -415,10 +429,10 @@ namespace AutoVolumeControl.Tests
 
                 Assert.Equal(100, FindSlider(strip, "chrome").Value);
                 Assert.Equal(70, FindSlider(strip, "spotify").Value);
-                Assert.Equal(0, FindSlider(strip, "spotify").RangeMin);
-                Assert.Equal(100, FindSlider(strip, "spotify").RangeMax);
+                Assert.Equal(0, FindSlider(strip, "spotify").Minimum);
+                Assert.Equal(100, FindSlider(strip, "spotify").Maximum);
                 Assert.Equal("%", FindSlider(strip, "spotify").ValueSuffix);
-                Assert.False(FindSlider(strip, "spotify").ShowText);
+                Assert.True(FindSlider(strip, "spotify").ShowValue);
             });
         }
 
@@ -647,7 +661,7 @@ namespace AutoVolumeControl.Tests
                 var slider = FindSlider(strip, "spotify");
 
                 Invoke(slider, "OnMouseWheel", new HandledMouseEventArgs(MouseButtons.None, 0, 0, 0, 120));
-                Assert.Equal(50 + RatioSlider.WheelStep, slider.Value);
+                Assert.Equal(50 + RatioSlider.WheelStepPercent, slider.Value);
                 Assert.Equal("55", store.Ratios["spotify"]);
 
                 Invoke(slider, "OnMouseWheel", new HandledMouseEventArgs(MouseButtons.None, 0, 0, 0, -240));
@@ -682,10 +696,10 @@ namespace AutoVolumeControl.Tests
                 apps.Update(new[] { "chrome" });
                 CreateMenu(strip).Generate();
 
-                // The Material controls fill their background with the parent's color; transparent renders black.
-                var table = strip.Items.OfType<ToolStripControlHost>().Select(h => h.Control).OfType<TableLayoutPanel>().Single();
+                // The checkboxes and sliders fill their background with the parent's color; transparent renders black.
+                var table = FindControl<TableLayoutPanel>(strip, MenuHandler.AppTableName);
                 Assert.Equal(System.Drawing.Color.White, table.BackColor);
-                Assert.Equal(System.Drawing.Color.White, FindControl<MaterialLabel>(strip, MenuHandler.LabelName("chrome")).Parent.BackColor);
+                Assert.Equal(System.Drawing.Color.White, FindControl<Label>(strip, MenuHandler.LabelName("chrome")).Parent.BackColor);
             });
         }
 
@@ -698,9 +712,10 @@ namespace AutoVolumeControl.Tests
                 apps.Update(new[] { "an-app-with-a-rather-long-executable-name" });
                 CreateMenu(strip).Generate();
 
-                var table = strip.Items.OfType<ToolStripControlHost>().Select(h => h.Control).OfType<TableLayoutPanel>().Single();
-                var exitHost = strip.Items.OfType<ToolStripControlHost>().Single(h => h.Control is MaterialButton);
+                var table = FindControl<TableLayoutPanel>(strip, MenuHandler.AppTableName);
+                var exitHost = strip.Items.OfType<ToolStripControlHost>().Single(h => h.Control.Controls.Contains(FindExitButton(strip)));
                 Assert.True(exitHost.Width >= table.GetPreferredSize(System.Drawing.Size.Empty).Width);
+                Assert.Equal(DockStyle.Fill, FindExitButton(strip).Dock);
             });
         }
 
@@ -735,6 +750,201 @@ namespace AutoVolumeControl.Tests
 
                 Assert.True(menu.Generate());
                 Assert.False(FindCheckbox(strip, "spotify").Checked);
+            });
+        }
+
+        // ---- menu scale ----
+
+        [Fact]
+        public void ScaleSection_ShowsTheStoredScale()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                CreateMenu(strip).Generate();
+
+                Assert.Equal("App Scale: 100% (Default)", FindNested<Label>(strip, MenuHandler.ScaleCaptionName).Text);
+                var slider = FindScaleSlider(strip);
+                Assert.Equal(1, slider.Value);
+                Assert.Equal(0, slider.Minimum);
+                Assert.Equal(3, slider.Maximum);
+                Assert.Equal(new[] { "85%", "100%", "115%", "130%" }, slider.TickLabels);
+            });
+        }
+
+        [Fact]
+        public void ScaleCaption_MarksOnlyTheDefault()
+        {
+            Assert.Equal("App Scale: 100% (Default)", MenuHandler.ScaleCaption(100));
+            Assert.Equal("App Scale: 115%", MenuHandler.ScaleCaption(115));
+        }
+
+        [Fact]
+        public void LargerScale_EnlargesTheWholeMenu()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { new AppInfo("chrome") });
+                var menu = CreateMenu(strip);
+                menu.Generate();
+                float dpi = strip.DeviceDpi / 96f;
+                Assert.Equal(dpi, menu.ScaleFactor, 3);
+                var before = Measure(strip);
+
+                scale.SetPercent(130);
+                Assert.True(menu.Generate());
+
+                Assert.Equal(dpi * 1.3f, menu.ScaleFactor, 3);
+                var after = Measure(strip);
+                for (int i = 0; i < before.Length; i++)
+                    Assert.True(after[i] > before[i], $"Measure {i}: {after[i]} is not larger than {before[i]}");
+                Assert.Equal(1.3, after[0] / before[0], 1);
+                Assert.Equal(3, FindScaleSlider(strip).Value);
+            });
+        }
+
+        [Fact]
+        public void SmallerScale_ShrinksTheWholeMenu()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { new AppInfo("chrome") });
+                var menu = CreateMenu(strip);
+                menu.Generate();
+                var before = Measure(strip);
+
+                scale.SetPercent(85);
+                Assert.True(menu.Generate());
+
+                var after = Measure(strip);
+                for (int i = 0; i < before.Length; i++)
+                    Assert.True(after[i] < before[i], $"Measure {i}: {after[i]} is not smaller than {before[i]}");
+            });
+        }
+
+        /// <summary>Sizes of everything in the menu: icon, checkbox, font, sliders, button and the menu itself.</summary>
+        private static double[] Measure(ContextMenuStrip strip)
+        {
+            var icon = FindControl<PictureBox>(strip, MenuHandler.IconName("chrome"));
+            var checkbox = FindCheckbox(strip, "chrome");
+            var label = FindControl<Label>(strip, MenuHandler.LabelName("chrome"));
+            var slider = FindSlider(strip, "chrome");
+            var scaleSlider = FindScaleSlider(strip);
+            var exit = FindExitButton(strip);
+            return new double[]
+            {
+                icon.Image.Width,
+                icon.Width,
+                checkbox.Height,
+                checkbox.Width,
+                label.Font.Size,
+                slider.Width,
+                slider.Height,
+                scaleSlider.Width,
+                scaleSlider.Height,
+                exit.Height,
+                exit.Font.Size,
+                FindCheckbox(strip, "autostart").Width,
+                strip.GetPreferredSize(System.Drawing.Size.Empty).Width,
+                strip.GetPreferredSize(System.Drawing.Size.Empty).Height,
+            };
+        }
+
+        [Fact]
+        public void DraggingTheScaleSlider_OnlyUpdatesTheCaption_UntilReleased()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                var menu = CreateMenu(strip);
+                menu.Generate();
+                var slider = FindScaleSlider(strip);
+
+                Invoke(slider, "OnMouseDown", new MouseEventArgs(MouseButtons.Left, 1, 0, 10, 0));
+                Assert.True(slider.Dragging);
+                Drag(slider, 2);
+                Drag(slider, 3);
+
+                Assert.Equal("App Scale: 130%", FindNested<Label>(strip, MenuHandler.ScaleCaptionName).Text);
+                Assert.Equal(100, scale.Percent);
+                Assert.Same(slider, FindScaleSlider(strip));
+
+                Invoke(slider, "OnMouseUp", new MouseEventArgs(MouseButtons.Left, 1, 0, 10, 0));
+
+                Assert.Equal(130, scale.Percent);
+                Assert.Equal("130", ((InMemorySettingsStore)store.GetSubStore(MenuScale.StoreName)).Values[MenuScale.ValueName]);
+                Assert.True(Sta.PumpUntil(() => FindScaleSlider(strip) != slider));
+                Assert.Equal(3, FindScaleSlider(strip).Value);
+                Assert.Equal("App Scale: 130%", FindNested<Label>(strip, MenuHandler.ScaleCaptionName).Text);
+                Assert.False(menu.DraggingSlider);
+            });
+        }
+
+        [Fact]
+        public void MouseWheel_OnTheScaleSlider_AppliesImmediately()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                var menu = CreateMenu(strip);
+                menu.Generate();
+                var slider = FindScaleSlider(strip);
+
+                Invoke(slider, "OnMouseWheel", new HandledMouseEventArgs(MouseButtons.None, 0, 0, 0, -120));
+
+                Assert.Equal(85, scale.Percent);
+                Assert.True(Sta.PumpUntil(() => FindScaleSlider(strip) != slider));
+                Assert.Equal(0, FindScaleSlider(strip).Value);
+            });
+        }
+
+        [Fact]
+        public void ScaleChangedElsewhere_Rebuilds()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                var menu = CreateMenu(strip);
+                menu.Generate();
+
+                scale.SetPercent(115);
+
+                Assert.True(menu.Generate());
+                Assert.Equal("App Scale: 115%", FindNested<Label>(strip, MenuHandler.ScaleCaptionName).Text);
+            });
+        }
+
+        [Fact]
+        public void ScaleChange_KeepsTheOpenMenuOnTheScreen()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "chrome" });
+                var menu = CreateMenu(strip);
+                var area = Screen.PrimaryScreen.WorkingArea;
+                menu.Generate();
+                // Opened like from the tray: bottom right, just above the taskbar.
+                var size = strip.GetPreferredSize(System.Drawing.Size.Empty);
+                strip.Show(area.Right - size.Width, area.Bottom - size.Height);
+                try
+                {
+                    int bottom = strip.Bounds.Bottom;
+                    int right = strip.Bounds.Right;
+
+                    scale.SetPercent(130);
+                    Assert.True(menu.Generate());
+
+                    Assert.True(area.Contains(strip.Bounds), $"{strip.Bounds} is not within {area}");
+                    Assert.Equal(bottom, strip.Bounds.Bottom);
+                    Assert.Equal(right, strip.Bounds.Right);
+                }
+                finally
+                {
+                    strip.Close();
+                }
             });
         }
     }

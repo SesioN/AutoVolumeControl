@@ -1,7 +1,6 @@
 using System;
 using System.Linq;
 using System.Windows.Forms;
-using MaterialSkin.Controls;
 using Xunit;
 
 namespace AutoVolumeControl.Tests
@@ -34,7 +33,8 @@ namespace AutoVolumeControl.Tests
             return strip.Items.OfType<ToolStripControlHost>()
                 .Select(h => h.Control)
                 .OfType<TableLayoutPanel>()
-                .SelectMany(p => p.Controls.OfType<MaterialCheckbox>())
+                .Where(p => p.Name == MenuHandler.AppTableName)
+                .SelectMany(p => p.Controls.OfType<MenuCheckBox>())
                 .Any(c => c.Name == app);
         }
 
@@ -121,7 +121,7 @@ namespace AutoVolumeControl.Tests
             {
                 var app = Create();
                 app.Started.Wait(TimeSpan.FromSeconds(10));
-                var exit = app.ContextMenu.Items.OfType<ToolStripControlHost>().Select(h => h.Control).OfType<MaterialButton>().Single();
+                var exit = app.ContextMenu.Items.OfType<ToolStripControlHost>().SelectMany(h => h.Control.Controls.OfType<Button>()).Single();
 
                 exit.PerformClick();
                 Assert.False(backend.Disposed);

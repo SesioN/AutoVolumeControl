@@ -1,6 +1,6 @@
 # Architecture
 
-AutoVolumeControl is a Windows tray application (.NET Framework 4.8, WinForms, MaterialSkin.2 for the menu) that keeps the
+AutoVolumeControl is a Windows tray application (.NET Framework 4.8, WinForms with own Material style menu controls) that keeps the
 volume and mute state of selected applications equal to the master volume of the default
 playback device.
 
@@ -27,7 +27,9 @@ flowchart LR
     AutoVolumeService --> AppPreferences
     MenuHandler --> AppPreferences
     MenuHandler --> AutoStart
-    AppPreferences --> AppSettings[("HKCU\SOFTWARE\AutoVolumeControl (+ \Ratios)")]
+    MenuHandler --> MenuScale
+    AppPreferences --> AppSettings[("HKCU\SOFTWARE\AutoVolumeControl (+ \Ratios, \Menu)")]
+    MenuScale --> AppSettings
     AutoStart --> RunKey[("HKCU\...\CurrentVersion\Run")]
     CoreAudioBackend -. events .-> AutoVolumeService
 ```
@@ -40,9 +42,12 @@ flowchart LR
 | `CompatLayer` | Restarts the app once without DPI compatibility layers inherited from the launcher. |
 | `SingleInstance` | Named mutex so two instances never sync against each other. |
 | `VolumeControl` | `ApplicationContext`: owns the tray icon, context menu, settings and the service. Marshals `Apps.AppsUpdated` to the UI thread. |
-| `MenuHandler` | Builds the tray menu (one row per app: checkbox, icon, name and ratio slider; "Start with Windows"; Exit). Rebuilds only when the content changed, disposes the old items and waits while a mouse button is held down on the open menu. |
-| `AppIconCache` | UI thread only. One bitmap per app name in `SystemInformation.SmallIconSize`, read from the executable via the shell (`SHGetFileInfo`) and converted with `Icon.ToBitmap` (keeps the alpha channel), else the generic application icon. Drops icons of apps that are no longer shown; disposed by `VolumeControl`. |
-| `RatioSlider` | The 0–100 % slider of an app row: a `MaterialSlider` with a `RatioChanged` event for drag and mouse wheel, whose wheel moves the value in the expected direction. |
+| `MenuHandler` | Builds the tray menu (one row per app: checkbox, icon, name and ratio slider; "Start with Windows"; "App Scale"; Exit) in the current scale. Rebuilds only when the content changed, disposes the old items and waits while a mouse button is held down on the open menu. |
+| `MenuScale` | The user's menu size (85/100/115/130 %, default 100 %) on top of `ISettingsStore`; invalid values are tolerated. |
+| `MenuTheme` / `MenuRenderer` / `MenuFonts` | Colors (Material light theme: indigo primary, pink accent), the renderer of the menu background, border and separators, and the fonts of one scale. |
+| `MenuCheckBox` / `MenuSlider` | Owner-drawn Material style checkbox and slider whose every size is multiplied by a `ScaleFactor`. The slider raises `ValueChangedByUser` for clicks, drags and the mouse wheel (up = higher) and can show its value or tick labels. |
+| `AppIconCache` | UI thread only. One bitmap per app name in `IconSize` (`SystemInformation.SmallIconSize` × the menu size), read from the executable via the shell (`SHGetFileInfo`; the large icon scaled down above the small size) and converted with `Icon.ToBitmap` (keeps the alpha channel), else the generic application icon. Drops icons of apps that are no longer shown and all icons when the size changes; disposed by `VolumeControl`. |
+| `RatioSlider` | The 0–100 % `MenuSlider` of an app row; the mouse wheel moves it by 5 %. |
 | `AutoVolumeService` | Orchestrates everything audio related on the `AudioThread`: attach to the device, list apps, sync volumes, react to events. |
 | `AudioThread` | One long-lived MTA thread with a work queue. All COM objects are created, used and released there. |
 | `IAudioBackend` / `CoreAudioBackend` | Access to the default playback device via the Windows Core Audio API. Keeps one `SessionWatch` per running app session that caches its name and volume interface and forwards its events; the session list is only re-read after an event that can change it. |
@@ -119,21 +124,30 @@ runs, so a burst of notifications always ends on the latest value.
 
 ### Menu
 `Generate()` compares a description of the content (apps, their flags and ratios, whether an icon is known,
-autostart) with the last rendered one and only rebuilds when it differs; replaced items are disposed. Changes
+autostart, menu size and DPI) with the last rendered one and only rebuilds when it differs; replaced items are disposed. Changes
 made in the menu itself (app checkbox, slider, autostart) update that description, so they do not cause a rebuild;
 a change made elsewhere that the menu does not show yet still does.
 
 Rows: `[checkbox] [icon] name  [slider 0–100 %]` in a `TableLayoutPanel`. Clicking the icon or the name toggles the
 checkbox; the slider is disabled while the app is unchecked. The table keeps the menu's background color: the
-Material controls fill their background with their parent's color, and a transparent one renders black. The
-slider width and the spacing are scaled with the DPI; the Exit button is at least as wide as the rows.
+checkboxes and sliders fill their background with their parent's color, and a transparent one renders black. The
+Exit button spans the menu.
 
-The slider (`RatioSlider`, a `MaterialSlider`) reports every step while dragging. Each step takes effect
+The slider (`RatioSlider`) reports every step while dragging. Each step takes effect
 immediately (in memory, `AppPreferences.SetRatioPercent(..., persist: false)`, which raises `Changed`, and the
 service merges the resulting sync requests), so the app follows the slider live; the final value is written to the
 registry once when the drag ends (mouse-up, lost mouse capture, menu closed or reopened). The mouse wheel moves the
-slider by 5 % per notch (up = louder; `MaterialSlider` itself goes the other way, so `RatioSlider` replaces it)
-and is written immediately.
+slider by 5 % per notch (up = louder) and is written immediately.
+
+### Menu size ("App Scale")
+Everything in the menu is sized at 96 DPI and 100 % and multiplied by `DeviceDpi / 96 × MenuScale.Factor`: fonts,
+checkboxes, sliders, icons, spacing, the Exit button and so the menu itself. The "App Scale" section shows
+`App Scale: 100% (Default)` and a slider over the four sizes between a small and a large "A" (clicking a letter
+moves one step). While the slider is dragged only the caption follows it; the size is stored and the menu rebuilt
+when the slider is released, since a rebuild replaces the slider under the mouse. A click on the track or the mouse
+wheel applies immediately. The rebuild runs from the deferred-rebuild timer, never inside the slider's own event.
+When the open menu changes its size it keeps the corner nearest to where it was opened (the bottom right above the
+tray) and stays within the working area. Old fonts and icons are disposed together with the old items.
 
 While a mouse button is held down on the open menu, a rebuild (e.g. because an app started or exited) is
 deferred, so a slider being dragged is not destroyed. A timer checks every 50 ms whether the button was released
@@ -145,21 +159,23 @@ menu always builds. While a slider is dragged, a click outside the menu does not
 | Location | Content |
 |---|---|
 | `HKCU\SOFTWARE\AutoVolumeControl\<app>` | `"True"` / `"False"` – whether the app is synced. Written as `"True"` when an app is seen for the first time. |
+| `HKCU\SOFTWARE\AutoVolumeControl\Menu\Scale` | Integer percent `"85"`, `"100"`, `"115"` or `"130"` – the menu size. Missing or unreadable means 100 %, other numbers snap to the nearest size. Written when a new size is chosen. |
 | `HKCU\SOFTWARE\AutoVolumeControl\Ratios\<app>` | Integer percent `"0"`–`"100"` (culture invariant) – the app's share of the master volume. Missing or unreadable means 100 %, out of range is clamped. A subkey, so it cannot clash with the flags; created on the first write. Written when a slider drag ends or the mouse wheel moves a slider. |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\AutoVolumeControl` | `"<path to exe>"` when autostart is enabled. |
 
 ## Build & packaging
 
 - `src/AutoVolumeControl` – SDK-style project targeting `net48`.
-- Costura.Fody embeds the dependencies (MaterialSkin), so the output is a single `AutoVolumeControl.exe`;
+- Costura.Fody embeds any dependencies (currently none), so the output is a single `AutoVolumeControl.exe`;
   `AutoVolumeControl.exe.config` is optional (it only names the runtime version).
 - `app.manifest` declares the supported Windows versions and system DPI awareness.
 - `tests/AutoVolumeControl.Tests` – xUnit tests (see README).
 
 ## DPI and sharpness
 
-- The process is **system DPI aware** (`app.manifest`): WinForms and MaterialSkin render the menu natively at
-  the system scaling (e.g. 144 DPI at 150 %) instead of being bitmap-stretched by Windows.
+- The process is **system DPI aware** (`app.manifest`): the menu is rendered natively at the system scaling
+  (e.g. 144 DPI at 150 %) instead of being bitmap-stretched by Windows, and all its sizes, including the fonts,
+  follow that DPI (times the user's "App Scale").
 - Windows passes compatibility settings to child processes via the `__COMPAT_LAYER` environment variable. A
   launcher with "Override high DPI scaling: System (Enhanced)" (e.g. a file manager) would force the app to be
   DPI unaware (`DPIUNAWARE GDIDPISCALING`), making the menu large and blurry. `CompatLayer` detects these
@@ -167,8 +183,7 @@ menu always builds. While a slider is dragged, a click outside the menu does not
 - The tray icon is loaded in `SystemInformation.SmallIconSize` (24x24 at 150 %) from the multi-size `icon.ico`,
   so Windows does not downscale a larger image.
 - Limitation: on a monitor whose scaling differs from the primary monitor, Windows scales the menu of a system
-  aware app. Per-monitor awareness would need the MaterialSkin menu to rescale itself on DPI changes, which it
-  does not support.
+  aware app. Per-monitor awareness would need the menu to rebuild itself on DPI changes, which it does not do yet.
 
 ## Core Audio API rules followed
 
@@ -195,6 +210,8 @@ display, so these are checked by hand:
 2. **Menu at 100 % and 150 % display scaling:** icons are sharp and as large as the tray icon, rows are aligned,
    dragging a slider changes the app's volume live, also when the pointer leaves the menu while dragging, and
    starting or closing an app while dragging does not interrupt the drag (the menu updates after releasing).
+   "App Scale": dragging only changes the caption, releasing resizes everything (text, icons, checkboxes, sliders,
+   Exit button) and the menu stays above the taskbar; the size is kept after restarting the app.
 3. **Audio service restart:** as administrator run `net stop audiosrv && net start audiosrv` while the app runs.
    Within a few seconds after the service is back the apps are listed and synced again; the log shows the
    re-attach.
