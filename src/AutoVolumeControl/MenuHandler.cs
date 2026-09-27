@@ -1,54 +1,86 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
+using System.Linq;
+using System.Threading.Tasks;
 using System.Windows.Forms;
-using Microsoft.Win32;
 using MaterialSkin;
 using MaterialSkin.Controls;
-using System.Drawing.Printing;
 
 namespace AutoVolumeControl
 {
     class MenuHandler
     {
-        private readonly MaterialContextMenuStrip contextMenuStrip;
-        private EventHandler onExitHandler;
-        private readonly AppSettings appSettings;
+        /// <summary>How long opening the menu waits for a fresh session list before showing the cached one.</summary>
+        public static readonly TimeSpan RefreshTimeout = TimeSpan.FromMilliseconds(500);
+
+        private readonly ContextMenuStrip contextMenuStrip;
+        private readonly AppPreferences preferences;
         private readonly Apps apps;
+        private readonly AutoStart autoStart;
+        private readonly Func<Task> refreshApps;
+        private string renderedState;
 
-        public MenuHandler(MaterialContextMenuStrip contextMenuStrip, AppSettings appSettings, Apps apps)
+        public event EventHandler ExitRequested;
+
+        public MenuHandler(ContextMenuStrip contextMenuStrip, AppPreferences preferences, Apps apps, AutoStart autoStart, Func<Task> refreshApps)
         {
-            this.appSettings = appSettings;
-            this.apps = apps;
             this.contextMenuStrip = contextMenuStrip;
+            this.preferences = preferences;
+            this.apps = apps;
+            this.autoStart = autoStart;
+            this.refreshApps = refreshApps;
             this.contextMenuStrip.Opening += ContextMenuStrip_Opening;
-        }
-
-        public void OnExit(EventHandler handler)
-        {
-            onExitHandler = handler;
         }
 
         private void ContextMenuStrip_Opening(object sender, System.ComponentModel.CancelEventArgs e)
         {
-            apps.Refresh();
+            try
+            {
+                refreshApps?.Invoke().Wait(RefreshTimeout);
+            }
+            catch (AggregateException ex)
+            {
+                Trace.WriteLine($"Refreshing apps failed: {ex.GetBaseException().Message}");
+            }
             Generate();
         }
 
-        public void Generate()
+        /// <summary>Rebuilds the menu if anything it shows has changed.</summary>
+        /// <returns>true if the menu was rebuilt.</returns>
+        public bool Generate()
         {
-            contextMenuStrip.Items.Clear();
+            var appList = apps.GetApps();
+            var state = DescribeState(appList);
+            if (state == renderedState)
+                return false;
+
+            ClearItems();
             AddHeader();
-            AddAppItems();
+            AddAppItems(appList);
             AddSeparator();
             AddAutoRunItem();
             AddSeparator();
             AddExitItem();
 
-            Console.WriteLine("Context menu generated with items:");
-            foreach (ToolStripItem item in contextMenuStrip.Items)
-            {
-                Console.WriteLine($"- {item.Text}");
-            }
+            renderedState = state;
+            return true;
+        }
+
+        private string DescribeState(List<string> appList)
+        {
+            var appStates = appList.Select(a => $"{a}={preferences.IsEnabled(a)}");
+            return string.Join("\n", appStates) + $"\nautostart={autoStart.IsEnabled}";
+        }
+
+        /// <summary>Items.Clear() does not dispose the removed items; their window handles would leak.</summary>
+        private void ClearItems()
+        {
+            var oldItems = contextMenuStrip.Items.Cast<ToolStripItem>().ToList();
+            contextMenuStrip.Items.Clear();
+            foreach (var item in oldItems)
+                item.Dispose();
         }
 
         private void AddHeader()
@@ -67,14 +99,11 @@ namespace AutoVolumeControl
             };
             contextMenuStrip.Items.Add(host);
 
-            AddSeparator(0, 0, 0, 0);
+            AddSeparator();
         }
 
-        private void AddAppItems()
+        private void AddAppItems(List<string> appList)
         {
-            var appList = apps.GetApps();
-            Console.WriteLine($"Number of apps retrieved: {appList.Count}");
-
             if (appList.Count == 0)
                 return;
 
@@ -89,17 +118,14 @@ namespace AutoVolumeControl
 
             foreach (var appName in appList)
             {
-                var checkbox = CreateAppCheckBox(appName);
-                panel.Controls.Add(checkbox);
-
-                Console.WriteLine($"Added app to menu: {appName}");
+                panel.Controls.Add(CreateAppCheckBox(appName));
             }
 
             var host = new ToolStripControlHost(panel)
             {
                 AutoSize = true,
             };
-            
+
             contextMenuStrip.Items.Add(host);
         }
 
@@ -109,26 +135,11 @@ namespace AutoVolumeControl
             {
                 Text = $"App: {appName}",
                 Name = appName,
-                Checked = GetAppSetting(appName),
+                Checked = preferences.IsEnabled(appName),
                 AutoSize = true
             };
-            checkbox.CheckedChanged += (sender, e) => OnAppCheckBoxChanged(checkbox);
+            checkbox.CheckedChanged += (sender, e) => preferences.SetEnabled(appName, checkbox.Checked);
             return checkbox;
-        }
-
-        private bool GetAppSetting(string appName)
-        {
-            if (!appSettings.Exists(appName))
-            {
-                appSettings.Set(appName, "True");
-                return true;
-            }
-            return Convert.ToBoolean(appSettings.Get(appName));
-        }
-
-        private void OnAppCheckBoxChanged(MaterialCheckbox checkbox)
-        {
-            appSettings.Set(checkbox.Name, checkbox.Checked.ToString());
         }
 
         private void AddAutoRunItem()
@@ -136,11 +147,11 @@ namespace AutoVolumeControl
             var checkbox = new MaterialCheckbox
             {
                 Text = "Start with Windows",
+                Name = "autostart",
                 AutoSize = true,
+                Checked = autoStart.IsEnabled
             };
-            checkbox.Checked = IsAutoRunEnabled();
             checkbox.CheckedChanged += (sender, e) => OnAutoRunCheckBoxChanged(checkbox);
-
 
             var host = new ToolStripControlHost(checkbox)
             {
@@ -149,22 +160,16 @@ namespace AutoVolumeControl
             contextMenuStrip.Items.Add(host);
         }
 
-        private bool IsAutoRunEnabled()
-        {
-            using var autoStartRegKey = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", false);
-            return autoStartRegKey?.GetValue(Application.ProductName) != null;
-        }
-
         private void OnAutoRunCheckBoxChanged(MaterialCheckbox checkbox)
         {
-            using var autoStartRegKey = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true);
-            if (checkbox.Checked)
+            try
             {
-                autoStartRegKey?.SetValue(Application.ProductName, Application.ExecutablePath);
+                autoStart.SetEnabled(checkbox.Checked);
             }
-            else
+            catch (Exception ex) when (ex is UnauthorizedAccessException || ex is System.Security.SecurityException || ex is System.IO.IOException)
             {
-                autoStartRegKey?.DeleteValue(Application.ProductName, false);
+                Trace.WriteLine($"Changing autostart failed: {ex.Message}");
+                checkbox.Checked = autoStart.IsEnabled;
             }
         }
 
@@ -173,11 +178,12 @@ namespace AutoVolumeControl
             var button = new MaterialButton
             {
                 Text = "Exit",
+                Name = "exit",
                 AutoSize = false,
                 Dock = DockStyle.Fill,
                 Height = 36
             };
-            button.Click += (sender, e) => Exit(sender, e);
+            button.Click += (sender, e) => ExitRequested?.Invoke(this, EventArgs.Empty);
 
             var host = new ToolStripControlHost(button)
             {
@@ -191,17 +197,11 @@ namespace AutoVolumeControl
             contextMenuStrip.Items.Add(host);
         }
 
-        private void Exit(object sender, EventArgs e)
-        {
-            onExitHandler?.Invoke(sender, e);
-            Application.Exit();
-        }
-
-        private void AddSeparator(int left = 0, int top = 0, int right = 0, int bottom = 0)
+        private void AddSeparator()
         {
             contextMenuStrip.Items.Add(new ToolStripSeparator
             {
-                Margin = new Padding(left, top, right, bottom),
+                Margin = new Padding(0),
                 BackColor = Color.Transparent
             });
         }

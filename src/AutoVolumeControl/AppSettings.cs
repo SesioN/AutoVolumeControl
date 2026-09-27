@@ -1,26 +1,37 @@
-﻿using System;
+using System;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
 namespace AutoVolumeControl
 {
-    class AppSettings
+    interface ISettingsStore
     {
-        private static readonly string appPath = $"SOFTWARE\\{Application.ProductName}";
+        string Get(string name);
+        void Set(string name, string value);
+        bool Exists(string name);
+    }
+
+    /// <summary>String values stored under HKCU\SOFTWARE\&lt;product name&gt;.</summary>
+    sealed class AppSettings : ISettingsStore, IDisposable
+    {
         private readonly RegistryKey appRegistryRoot;
         private readonly object lockObj = new object();
 
-        public AppSettings()
+        public AppSettings() : this($"SOFTWARE\\{Application.ProductName}")
         {
-            appRegistryRoot = Registry.CurrentUser.OpenSubKey(appPath, true)
-                ?? Registry.CurrentUser.CreateSubKey(appPath, true);
+        }
+
+        public AppSettings(string keyPath)
+        {
+            appRegistryRoot = Registry.CurrentUser.CreateSubKey(keyPath, true)
+                ?? throw new InvalidOperationException($"Unable to open registry key HKCU\\{keyPath}");
         }
 
         public void Set(string name, string value)
         {
             lock (lockObj)
             {
-                appRegistryRoot.SetValue(name, value);
+                appRegistryRoot.SetValue(name, value, RegistryValueKind.String);
             }
         }
 
@@ -37,6 +48,14 @@ namespace AutoVolumeControl
             lock (lockObj)
             {
                 return appRegistryRoot.GetValue(name) != null;
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (lockObj)
+            {
+                appRegistryRoot.Dispose();
             }
         }
     }

@@ -1,148 +1,114 @@
-﻿using System;
-using System.Runtime.InteropServices;
+using System;
+using System.Drawing;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using CSCore.CoreAudioAPI;
 using MaterialSkin.Controls;
 
 namespace AutoVolumeControl
 {
+    /// <summary>The tray application: owns the tray icon, the menu and the volume service.</summary>
     class VolumeControl : ApplicationContext
     {
         private readonly AppSettings appSettings;
         private readonly Apps apps;
         private readonly NotifyIcon notifyIcon;
-        private MMDevice defaultPlaybackDevice;
-        private AudioEndpointVolumeCallback volumeCallback;
-        private AudioEndpointVolume defaultDeviceVolume;
-
+        private readonly ContextMenuStrip contextMenuStrip;
+        private readonly AutoVolumeService service;
         private readonly Control uiControl;
         private readonly MenuHandler menuHandler;
+        private bool disposed;
 
         public VolumeControl()
+            : this(new CoreAudioBackend(), new AppSettings(), new AutoStart(Application.ProductName, Application.ExecutablePath), showTrayIcon: true)
+        {
+        }
+
+        internal VolumeControl(IAudioBackend backend, AppSettings appSettings, AutoStart autoStart, bool showTrayIcon)
         {
             uiControl = new Control();
             uiControl.CreateControl();
 
-            appSettings = new AppSettings();
+            this.appSettings = appSettings;
+            var preferences = new AppPreferences(appSettings);
             apps = new Apps();
-            apps.AppsUpdated += OnAppsUpdated;
 
-            notifyIcon = CreateNotifyIcon();            menuHandler = new MenuHandler((MaterialContextMenuStrip)notifyIcon.ContextMenuStrip, appSettings, apps);
-            menuHandler.OnExit(Exit);
-
-            InitializeDefaultDevice();
-        }
-
-        private NotifyIcon CreateNotifyIcon()
-        {
-            var icon = new NotifyIcon
+            contextMenuStrip = new MaterialContextMenuStrip();
+            notifyIcon = new NotifyIcon
             {
                 Icon = LoadIcon(),
-                ContextMenuStrip = new MaterialContextMenuStrip(),
-                Visible = true
+                Text = Application.ProductName,
+                ContextMenuStrip = contextMenuStrip,
+                Visible = showTrayIcon
             };
 
-            return icon;
+            service = new AutoVolumeService(backend, preferences, apps);
+            menuHandler = new MenuHandler(contextMenuStrip, preferences, apps, autoStart, service.RefreshAsync);
+            menuHandler.ExitRequested += Exit;
+            apps.AppsUpdated += OnAppsUpdated;
+
+            Started = service.Start();
+            Started.ContinueWith(t => ShowError(t.Exception.GetBaseException().Message), TaskContinuationOptions.OnlyOnFaulted);
         }
 
-        private static System.Drawing.Icon LoadIcon()
+        internal Task Started { get; }
+
+        internal MenuHandler Menu => menuHandler;
+
+        internal ContextMenuStrip ContextMenu => contextMenuStrip;
+
+        private static Icon LoadIcon()
         {
             using var stream = typeof(VolumeControl).Assembly.GetManifestResourceStream("AutoVolumeControl.icon.ico");
-            return new System.Drawing.Icon(stream);
-        }
-
-        private void InitializeDefaultDevice()
-        {
-            Task.Run(() =>
-            {
-                try
-                {
-                    InitializeCom();
-
-                    using var enumerator = new MMDeviceEnumerator();
-                    var playbackDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-
-                    var deviceVolume = AudioEndpointVolume.FromDevice(playbackDevice);
-                    var volumeCallback = new AudioEndpointVolumeCallback(playbackDevice, appSettings, apps);
-                    deviceVolume.RegisterControlChangeNotify(volumeCallback);
-
-                    AssignDeviceVariables(playbackDevice, deviceVolume, volumeCallback);
-                }
-                catch (Exception ex)
-                {
-                    ShowError(ex.Message);
-                }
-                finally
-                {
-                    ComHelper.CoUninitialize();
-                }
-            });
-        }
-
-        private void InitializeCom()
-        {
-            int hr = ComHelper.CoInitializeEx(IntPtr.Zero, ComHelper.COINIT.COINIT_MULTITHREADED);
-            if (hr == (int)ComHelper.HResult.RPC_E_CHANGED_MODE)
-            {
-                Console.WriteLine("COM already initialized with a different threading model in VolumeControl");
-            }
-            else if (hr < 0)
-            {
-                throw new COMException("Failed to initialize COM library", hr);
-            }
-        }
-
-        private void AssignDeviceVariables(MMDevice playbackDevice, AudioEndpointVolume deviceVolume, AudioEndpointVolumeCallback callback)
-        {
-            uiControl.BeginInvoke((Action)(() =>
-            {
-                defaultPlaybackDevice = playbackDevice;
-                defaultDeviceVolume = deviceVolume;
-                volumeCallback = callback;
-
-                apps.Refresh();
-            }));
+            return new Icon(stream);
         }
 
         private void ShowError(string message)
         {
-            uiControl.BeginInvoke((Action)(() =>
+            RunOnUiThread(() =>
             {
                 notifyIcon.BalloonTipText = $"Error initializing default playback device: {message}";
                 notifyIcon.ShowBalloonTip(5000);
-            }));
+            });
         }
 
         private void OnAppsUpdated(object sender, EventArgs e)
         {
-            uiControl.BeginInvoke((Action)(() =>
+            RunOnUiThread(() => menuHandler.Generate());
+        }
+
+        private void RunOnUiThread(Action action)
+        {
+            if (uiControl.IsDisposed || !uiControl.IsHandleCreated)
+                return;
+
+            try
             {
-                menuHandler.Generate();
-            }));
+                uiControl.BeginInvoke(action);
+            }
+            catch (InvalidOperationException)
+            {
+                // The handle was destroyed while exiting.
+            }
         }
 
         public void Exit(object sender, EventArgs e)
         {
             Dispose();
-            Application.ExitThread();
+            ExitThread();
         }
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing)
+            if (disposing && !disposed)
             {
-                defaultDeviceVolume?.UnregisterControlChangeNotify(volumeCallback);
-                volumeCallback?.Dispose();
-                defaultDeviceVolume?.Dispose();
-                defaultPlaybackDevice?.Dispose();
-                apps?.Dispose();
-                if (notifyIcon != null)
-                {
-                    notifyIcon.Visible = false;
-                    notifyIcon.Dispose();
-                }
-                uiControl?.Dispose();
+                disposed = true;
+                apps.AppsUpdated -= OnAppsUpdated;
+                service.Dispose();
+                notifyIcon.Visible = false;
+                notifyIcon.Dispose();
+                contextMenuStrip.Dispose();
+                appSettings.Dispose();
+                uiControl.Dispose();
             }
             base.Dispose(disposing);
         }
