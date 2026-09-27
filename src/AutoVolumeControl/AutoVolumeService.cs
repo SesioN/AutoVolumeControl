@@ -240,7 +240,10 @@ namespace AutoVolumeControl
             var current = sessions
                 .Where(s => !s.IsSystemSound && !string.IsNullOrEmpty(s.Name))
                 .GroupBy(s => s.Name)
-                .Select(g => new AppInfo(g.Key, g.Select(s => s.ExecutablePath).FirstOrDefault(p => !string.IsNullOrEmpty(p))))
+                .Select(g => new AppInfo(
+                    g.Key,
+                    g.Select(s => s.ExecutablePath).FirstOrDefault(p => !string.IsNullOrEmpty(p)),
+                    g.Select(s => s.ProcessId).Where(id => id > 0).Distinct()))
                 .ToList();
 
             foreach (var app in current)

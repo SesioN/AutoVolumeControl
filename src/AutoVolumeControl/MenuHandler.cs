@@ -26,6 +26,8 @@ namespace AutoVolumeControl
         private const int ExitButtonWidth = 270;
         private const int ExitButtonHeight = 36;
         private const int SliderWidth = 180;
+        /// <summary>Longer app names and window titles are cut off with an ellipsis (the tooltip shows them in full).</summary>
+        private const int MaxNameWidth = 200;
         private const int ScaleSliderMinWidth = 160;
 
         private readonly ContextMenuStrip contextMenuStrip;
@@ -36,7 +38,12 @@ namespace AutoVolumeControl
         private readonly AppIconCache icons;
         private readonly MenuScale scale;
         private readonly Func<bool> isMouseButtonDown;
+        private readonly Func<AppInfo, string> findTitle;
         private readonly Timer deferredRebuildTimer;
+        private readonly ToolTip toolTip;
+        // Window titles by app name, read when the menu opens (or an app appears), so the rows do not change while
+        // the menu is used. null: the app has no window title.
+        private readonly Dictionary<string, string> titles = new Dictionary<string, string>();
         private List<AppInfo> renderedApps = new List<AppInfo>();
         private string renderedState;
         private bool draggingSlider;
@@ -49,7 +56,8 @@ namespace AutoVolumeControl
         /// <param name="icons">Owned by the caller, which disposes it after the menu.</param>
         /// <param name="scale">The user's menu size.</param>
         /// <param name="isMouseButtonDown">For tests; null reads <see cref="Control.MouseButtons"/>.</param>
-        public MenuHandler(ContextMenuStrip contextMenuStrip, AppPreferences preferences, Apps apps, AutoStart autoStart, Func<Task> refreshApps, AppIconCache icons, MenuScale scale, Func<bool> isMouseButtonDown = null)
+        /// <param name="findTitle">For tests; null reads the window title with <see cref="WindowTitles.Find"/>.</param>
+        public MenuHandler(ContextMenuStrip contextMenuStrip, AppPreferences preferences, Apps apps, AutoStart autoStart, Func<Task> refreshApps, AppIconCache icons, MenuScale scale, Func<bool> isMouseButtonDown = null, Func<AppInfo, string> findTitle = null)
         {
             this.contextMenuStrip = contextMenuStrip;
             this.preferences = preferences;
@@ -59,6 +67,9 @@ namespace AutoVolumeControl
             this.icons = icons;
             this.scale = scale;
             this.isMouseButtonDown = isMouseButtonDown ?? (() => Control.MouseButtons != MouseButtons.None);
+            this.findTitle = findTitle ?? WindowTitles.Find;
+            // Shown although the menu is not an active form.
+            toolTip = new ToolTip { ShowAlways = true };
 
             contextMenuStrip.Renderer = new MenuRenderer();
             contextMenuStrip.ShowImageMargin = false;
@@ -74,6 +85,7 @@ namespace AutoVolumeControl
             this.contextMenuStrip.Disposed += (sender, e) =>
             {
                 deferredRebuildTimer.Dispose();
+                toolTip.Dispose();
                 // The items are disposed with the menu; their fonts only now.
                 fonts?.Dispose();
                 fonts = null;
@@ -92,6 +104,8 @@ namespace AutoVolumeControl
         private void ContextMenuStrip_Opening(object sender, System.ComponentModel.CancelEventArgs e)
         {
             EndDrag();
+            // Read the window titles again: the rows show the current ones each time the menu opens.
+            titles.Clear();
             try
             {
                 refreshApps?.Invoke().Wait(RefreshTimeout);
@@ -225,9 +239,58 @@ namespace AutoVolumeControl
         private string DescribeState(List<AppInfo> appList)
         {
             var appStates = appList.Select(a =>
-                $"{a.Name}={preferences.IsEnabled(a.Name)};ratio={preferences.GetRatioPercent(a.Name)};icon={a.ExecutablePath != null}");
+                $"{a.Name}={preferences.IsEnabled(a.Name)};ratio={preferences.GetRatioPercent(a.Name)};icon={a.ExecutablePath != null};title={Title(a)}");
             return string.Join("\n", appStates) + $"\nautostart={autoStart.IsEnabled}\nscale={scale.Percent};dpi={contextMenuStrip.DeviceDpi}";
         }
+
+        /// <summary>The app's window title, read once per opening of the menu; null if it has none.</summary>
+        private string Title(AppInfo app)
+        {
+            if (!titles.TryGetValue(app.Name, out var title))
+            {
+                try
+                {
+                    title = findTitle(app);
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"Reading the window title of '{app.Name}' failed: {ex.Message}");
+                    title = null;
+                }
+                titles[app.Name] = string.IsNullOrWhiteSpace(title) ? null : title.Trim();
+                title = titles[app.Name];
+            }
+            return title;
+        }
+
+        /// <summary>The row text: the window title if there is one, else the app name.</summary>
+        internal static string RowText(string appName, string title) => title ?? appName;
+
+        /// <summary>The tooltip of a row: the full title and the app name, or just the app name.</summary>
+        internal static string RowToolTip(string appName, string title) => title == null ? appName : $"{title}\n{appName}";
+
+        /// <summary>The text cut off with "…" so it is at most the given width in the font.</summary>
+        internal static string Ellipsize(string text, Font font, int maxWidth)
+        {
+            if (string.IsNullOrEmpty(text) || Measure(text, font) <= maxWidth)
+                return text;
+
+            const string ellipsis = "…";
+            // The longest prefix that fits together with the ellipsis.
+            int low = 0, high = text.Length;
+            while (low < high)
+            {
+                int length = (low + high + 1) / 2;
+                if (Measure(text.Substring(0, length).TrimEnd() + ellipsis, font) <= maxWidth)
+                    low = length;
+                else
+                    high = length - 1;
+            }
+            return text.Substring(0, low).TrimEnd() + ellipsis;
+        }
+
+        private static int Measure(string text, Font font) =>
+            TextRenderer.MeasureText(text, font, Size.Empty, MenuTheme.SingleLine).Width;
 
         /// <summary>
         /// Applies a change the user made in the menu. The menu already shows it, so it must not cause a rebuild;
@@ -255,6 +318,8 @@ namespace AutoVolumeControl
         private void ClearItems()
         {
             var oldItems = contextMenuStrip.Items.Cast<ToolStripItem>().ToList();
+            // The tooltip holds on to the controls it was set for.
+            toolTip.RemoveAll();
             contextMenuStrip.Items.Clear();
             foreach (var item in oldItems)
                 item.Dispose();
@@ -351,9 +416,13 @@ namespace AutoVolumeControl
                 BackColor = Color.Transparent,
             };
 
-            var label = CreateLabel(appName, fonts.Body);
+            var title = Title(app);
+            var label = CreateLabel(Ellipsize(RowText(appName, title), fonts.Body, Scale(MaxNameWidth)), fonts.Body);
             label.Name = LabelName(appName);
             label.Margin = new Padding(0, 0, Scale(12), 0);
+            var tip = RowToolTip(appName, title);
+            toolTip.SetToolTip(label, tip);
+            toolTip.SetToolTip(icon, tip);
 
             var slider = new RatioSlider
             {

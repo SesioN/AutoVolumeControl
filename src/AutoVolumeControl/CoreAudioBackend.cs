@@ -428,6 +428,8 @@ namespace AutoVolumeControl
 
             public bool IsSystemSound { get; }
 
+            public int ProcessId => processId;
+
             public bool ProcessExited =>
                 process != null ? exited : ProcessInfo.Get(processId, sessionIdentifier).Exited;
 

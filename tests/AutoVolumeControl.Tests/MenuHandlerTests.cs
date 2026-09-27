@@ -20,6 +20,8 @@ namespace AutoVolumeControl.Tests
         private readonly AppIconCache icons = new AppIconCache();
         private readonly MenuScale scale;
         private bool mouseButtonDown;
+        private readonly System.Collections.Generic.Dictionary<string, string> windowTitles = new System.Collections.Generic.Dictionary<string, string>();
+        private int titleLookups;
 
         public MenuHandlerTests()
         {
@@ -36,7 +38,13 @@ namespace AutoVolumeControl.Tests
 
         private MenuHandler CreateMenu(ContextMenuStrip strip, Func<Task> refresh = null)
         {
-            return new MenuHandler(strip, preferences, apps, autoStart, refresh ?? (() => Task.CompletedTask), icons, scale, () => mouseButtonDown);
+            return new MenuHandler(strip, preferences, apps, autoStart, refresh ?? (() => Task.CompletedTask), icons, scale, () => mouseButtonDown, FindTitle);
+        }
+
+        private string FindTitle(AppInfo app)
+        {
+            titleLookups++;
+            return windowTitles.TryGetValue(app.Name, out var title) ? title : null;
         }
 
         private static T FindControl<T>(ContextMenuStrip strip, string name) where T : Control
@@ -1107,6 +1115,111 @@ namespace AutoVolumeControl.Tests
                     strip.Close();
                 }
             });
+        }
+
+        // ---- window titles ----
+
+        private static string ToolTipOf(MenuHandler menu, Control control)
+        {
+            var toolTip = (ToolTip)typeof(MenuHandler).GetField("toolTip", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(menu);
+            return toolTip.GetToolTip(control);
+        }
+
+        [Fact]
+        public void Row_ShowsTheWindowTitle_AndTheFullTitleAndNameAsTooltip()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "chrome", "spotify" });
+                windowTitles["chrome"] = "shroud - Twitch";
+                var menu = CreateMenu(strip);
+                menu.Generate();
+
+                var chrome = FindControl<Label>(strip, MenuHandler.LabelName("chrome"));
+                Assert.Equal("shroud - Twitch", chrome.Text);
+                Assert.Equal("shroud - Twitch\nchrome", ToolTipOf(menu, chrome));
+                Assert.Equal("shroud - Twitch\nchrome", ToolTipOf(menu, FindControl<PictureBox>(strip, MenuHandler.IconName("chrome"))));
+
+                // Without a window title: the app name, as before.
+                var spotify = FindControl<Label>(strip, MenuHandler.LabelName("spotify"));
+                Assert.Equal("spotify", spotify.Text);
+                Assert.Equal("spotify", ToolTipOf(menu, spotify));
+
+                // The settings stay keyed by the app name.
+                Assert.NotNull(FindCheckbox(strip, "chrome"));
+                FindCheckbox(strip, "chrome").Checked = false;
+                Assert.Equal("False", store.Values["chrome"]);
+            });
+        }
+
+        [Fact]
+        public void LongTitle_IsCutOff_ButTheTooltipShowsItInFull()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "chrome" });
+                var longTitle = "A very long stream title that goes on and on - with even more words - Twitch";
+                windowTitles["chrome"] = longTitle;
+                var menu = CreateMenu(strip);
+                menu.Generate();
+
+                var label = FindControl<Label>(strip, MenuHandler.LabelName("chrome"));
+                Assert.EndsWith("…", label.Text);
+                Assert.StartsWith(label.Text.TrimEnd('…').TrimEnd(), longTitle);
+                Assert.True(label.Text.Length < longTitle.Length);
+                Assert.Equal(longTitle + "\nchrome", ToolTipOf(menu, label));
+            });
+        }
+
+        [Fact]
+        public void Titles_AreReadWhenTheMenuOpens_NotWhileItIsUsed()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "spotify" });
+                windowTitles["spotify"] = "Artist - Song 1";
+                var menu = CreateMenu(strip);
+                RaiseOpening(strip);
+                Assert.Equal("Artist - Song 1", FindControl<Label>(strip, MenuHandler.LabelName("spotify")).Text);
+
+                windowTitles["spotify"] = "Artist - Song 2";
+                int lookups = titleLookups;
+                Assert.False(menu.Generate());
+                Assert.Equal(lookups, titleLookups);
+
+                RaiseOpening(strip);
+                Assert.Equal("Artist - Song 2", FindControl<Label>(strip, MenuHandler.LabelName("spotify")).Text);
+            });
+        }
+
+        [Fact]
+        public void FailingTitleLookup_ShowsTheAppName()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "chrome" });
+                var menu = new MenuHandler(strip, preferences, apps, autoStart, () => Task.CompletedTask, icons, scale, () => false,
+                    app => throw new InvalidOperationException("no window"));
+
+                menu.Generate();
+
+                Assert.Equal("chrome", FindControl<Label>(strip, MenuHandler.LabelName("chrome")).Text);
+            });
+        }
+
+        [Fact]
+        public void Ellipsize_KeepsShortTextsAndCutsLongOnes()
+        {
+            using var font = MenuTheme.CreateFont(15, 1f);
+            Assert.Equal("chrome", MenuHandler.Ellipsize("chrome", font, 200));
+
+            var cut = MenuHandler.Ellipsize(new string('x', 200), font, 100);
+            Assert.EndsWith("…", cut);
+            Assert.True(TextRenderer.MeasureText(cut, font, System.Drawing.Size.Empty, MenuTheme.SingleLine).Width <= 100);
         }
     }
 }

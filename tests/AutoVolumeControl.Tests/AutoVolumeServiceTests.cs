@@ -680,5 +680,20 @@ namespace AutoVolumeControl.Tests
             Assert.Equal(@"C:\Chrome\chrome.exe", list.Single(a => a.Name == "chrome").ExecutablePath);
             Assert.Null(list.Single(a => a.Name == "spotify").ExecutablePath);
         }
+
+        [Fact]
+        public void ProcessIds_AreCarriedIntoTheAppList()
+        {
+            backend.SetSessions(
+                new FakeSession("chrome", processId: 11),
+                new FakeSession("chrome", processId: 12),
+                new FakeSession("spotify"));
+
+            StartAttached();
+
+            var list = apps.GetApps();
+            Assert.Equal(new[] { 11, 12 }, list.Single(a => a.Name == "chrome").ProcessIds);
+            Assert.Empty(list.Single(a => a.Name == "spotify").ProcessIds);
+        }
     }
 }

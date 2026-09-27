@@ -3,7 +3,9 @@
 Tray application for Windows that keeps the volume and mute state of selected applications in sync
 with the master volume of the default playback device.
 
-- Right-click the tray icon to choose which apps are synced. Each app is shown with its icon.
+- Right-click the tray icon to choose which apps are synced. Each app is shown with its icon and the title of its
+  window (e.g. "shroud - Twitch" for Chrome, "Artist - Song" for Spotify), else its name; hovering shows the full
+  title and the app name. For a browser it is the active tab, which is not necessarily the one playing.
 - A slider per app sets its volume as a share of the master volume (100 % by default), e.g. music at 60 %
   of whatever the master is set to.
 - New apps are synced by default and as soon as they start playing audio.

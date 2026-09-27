@@ -47,6 +47,7 @@ flowchart LR
 | `MenuTheme` / `MenuRenderer` / `MenuFonts` | Colors (Material light theme: indigo primary, pink accent), the renderer of the menu background, border and separators, and the fonts of one scale. |
 | `MenuCheckBox` / `MenuSlider` | Owner-drawn Material style checkbox and slider whose every size is multiplied by a `ScaleFactor`. The slider raises `ValueChangedByUser` for clicks, drags and the mouse wheel (up = higher) and can show its value or tick labels. |
 | `AppIconCache` | UI thread only. One bitmap per app name in `IconSize` (`SystemInformation.SmallIconSize` × the menu size), read from the executable via the shell (`SHGetFileInfo`; the large icon scaled down above the small size) and converted with `Icon.ToBitmap` (keeps the alpha channel), else the generic application icon. Drops icons of apps that are no longer shown and all icons when the size changes; disposed by `VolumeControl`. |
+| `WindowTitles` | The title of an app's window for the menu: follows the audio process's parents with the same executable (browsers play audio from a helper process), takes the topmost visible, unowned, uncloaked window of these processes (`EnumWindows` lists in z-order) and removes a trailing browser name. |
 | `RatioSlider` | The 0–100 % `MenuSlider` of an app row; the mouse wheel moves it by 5 %. |
 | `AutoVolumeService` | Orchestrates everything audio related on the `AudioThread`: attach to the device, list apps, sync volumes, react to events. |
 | `AudioThread` | One long-lived MTA thread with a work queue. All COM objects are created, used and released there. |
@@ -128,7 +129,12 @@ autostart, menu size and DPI) with the last rendered one and only rebuilds when 
 made in the menu itself (app checkbox, slider, autostart) update that description, so they do not cause a rebuild;
 a change made elsewhere that the menu does not show yet still does.
 
-Rows: `[checkbox] [icon] name  [slider 0–100 %]` in a `TableLayoutPanel`. Clicking the icon or the name toggles the
+Rows: `[checkbox] [icon] title  [slider 0–100 %]` in a `TableLayoutPanel`. The title is the app's window title
+(`WindowTitles`, via the sessions' process IDs in `AppInfo.ProcessIds`), else the app name, cut off with "…" at
+200 px (scaled); the label and the icon have a tooltip with the full title and the app name. Titles are read when
+the menu opens (and for apps that appear while it is open) and then kept, so rows do not change while the menu is
+used; a new title on the next opening rebuilds the row. The settings stay keyed by the app name. For a browser the
+title is its active tab, which Windows does not tell apart from the tab playing audio. Clicking the icon or the name toggles the
 checkbox; the slider is disabled while the app is unchecked. The table keeps the menu's background color: the
 checkboxes and sliders fill their background with their parent's color, and a transparent one renders black. The
 rows span the menu (like the scale bar and the Exit button): checkbox, icon and name on the left, the slider

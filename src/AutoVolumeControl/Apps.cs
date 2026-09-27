@@ -7,16 +7,20 @@ namespace AutoVolumeControl
     /// <summary>An app with an audio session: its name (the settings key) and, if known, its executable.</summary>
     sealed class AppInfo
     {
-        public AppInfo(string name, string executablePath = null)
+        public AppInfo(string name, string executablePath = null, IEnumerable<int> processIds = null)
         {
             Name = name;
             ExecutablePath = string.IsNullOrEmpty(executablePath) ? null : executablePath;
+            ProcessIds = processIds?.ToList() ?? new List<int>();
         }
 
         public string Name { get; }
 
         /// <summary>Used for the icon in the menu; null if it could not be determined.</summary>
         public string ExecutablePath { get; }
+
+        /// <summary>The processes playing the app's audio, to find its window title; may be empty.</summary>
+        public IReadOnlyList<int> ProcessIds { get; }
 
         public override string ToString() => Name;
     }
@@ -63,8 +67,9 @@ namespace AutoVolumeControl
                 int index = current.FindIndex(a => a.Name == app.Name);
                 if (index < 0)
                     current.Add(app);
-                else if (current[index].ExecutablePath == null && app.ExecutablePath != null)
-                    current[index] = app;
+                else
+                    current[index] = new AppInfo(app.Name, current[index].ExecutablePath ?? app.ExecutablePath,
+                        current[index].ProcessIds.Concat(app.ProcessIds).Distinct());
             }
 
             bool isUpdated = false;
@@ -86,6 +91,11 @@ namespace AutoVolumeControl
                         // Kept once known: a later session of the same name must not make the icon flicker.
                         apps[index] = app;
                         isUpdated = true;
+                    }
+                    else if (!apps[index].ProcessIds.SequenceEqual(app.ProcessIds))
+                    {
+                        // Only used to find the window title when the menu opens: not a change of the list.
+                        apps[index] = new AppInfo(app.Name, apps[index].ExecutablePath ?? app.ExecutablePath, app.ProcessIds);
                     }
                 }
             }

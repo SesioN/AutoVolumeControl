@@ -77,8 +77,9 @@ namespace AutoVolumeControl.Tests
         private float volume;
         private bool muted;
 
-        public FakeSession(string name, bool isSystemSound = false, float volume = 1f, bool muted = false, string id = null, string executablePath = null)
+        public FakeSession(string name, bool isSystemSound = false, float volume = 1f, bool muted = false, string id = null, string executablePath = null, int processId = 0)
         {
+            ProcessId = processId;
             Id = id ?? Guid.NewGuid().ToString("N");
             Name = name;
             ExecutablePath = executablePath;
@@ -91,6 +92,7 @@ namespace AutoVolumeControl.Tests
         public string Name { get; }
         public string ExecutablePath { get; }
         public bool IsSystemSound { get; }
+        public int ProcessId { get; }
         public bool ThrowOnWrite { get; set; }
         public int VolumeWrites { get; private set; }
         public int MuteWrites { get; private set; }

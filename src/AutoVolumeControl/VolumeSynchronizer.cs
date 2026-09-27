@@ -13,6 +13,8 @@ namespace AutoVolumeControl
         /// <summary>Full path of the app's executable, or null if it could not be determined.</summary>
         string ExecutablePath { get; }
         bool IsSystemSound { get; }
+        /// <summary>The process playing the audio (for its window title); 0 if unknown.</summary>
+        int ProcessId { get; }
         float Volume { get; set; }
         bool Muted { get; set; }
     }

@@ -154,5 +154,33 @@ namespace AutoVolumeControl.Tests
         {
             Assert.Null(new AppInfo("chrome", "").ExecutablePath);
         }
+
+        [Fact]
+        public void NewProcessIds_AreKept_WithoutAChangeEvent()
+        {
+            var apps = new Apps();
+            apps.Update(new[] { new AppInfo("chrome", @"C:\chrome.exe", new[] { 11 }) });
+            int raised = 0;
+            apps.AppsUpdated += (s, e) => raised++;
+
+            Assert.False(apps.Update(new[] { new AppInfo("chrome", null, new[] { 12 }) }));
+
+            var chrome = apps.GetApps().Single();
+            Assert.Equal(new[] { 12 }, chrome.ProcessIds);
+            Assert.Equal(@"C:\chrome.exe", chrome.ExecutablePath);
+            Assert.Equal(0, raised);
+        }
+
+        [Fact]
+        public void SessionsOfOneApp_CombineTheirProcessIds()
+        {
+            var apps = new Apps();
+
+            apps.Update(new[] { new AppInfo("chrome", null, new[] { 11 }), new AppInfo("chrome", @"C:\chrome.exe", new[] { 12, 11 }) });
+
+            var chrome = apps.GetApps().Single();
+            Assert.Equal(new[] { 11, 12 }, chrome.ProcessIds);
+            Assert.Equal(@"C:\chrome.exe", chrome.ExecutablePath);
+        }
     }
 }
