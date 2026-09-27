@@ -312,7 +312,15 @@ namespace AutoVolumeControl
                 AddAppRow(table, row, appList[row]);
             }
 
-            contextMenuStrip.Items.Add(new ToolStripControlHost(table) { AutoSize = true, Margin = Padding.Empty, ControlAlign = ContentAlignment.MiddleLeft });
+            // The rows span the menu: checkbox, icon and name on the left, the slider on the right, the name column
+            // takes the remaining width. The natural size is the minimum (see FitFullWidthItems).
+            var natural = table.GetPreferredSize(Size.Empty);
+            table.AutoSize = false;
+            table.ColumnStyles[2] = new ColumnStyle(SizeType.Percent, 100);
+            table.Size = natural;
+            table.MinimumSize = natural;
+
+            contextMenuStrip.Items.Add(new FullWidthControlHost(table) { AutoSize = false, Margin = Padding.Empty });
             return true;
         }
 
@@ -353,7 +361,7 @@ namespace AutoVolumeControl
                 Font = fonts.Small,
                 ScaleFactor = scaleFactor,
                 Width = Scale(SliderWidth),
-                Anchor = AnchorStyles.Left,
+                Anchor = AnchorStyles.Right,
                 Enabled = enabled,
             };
             slider.Value = preferences.GetRatioPercent(appName);
@@ -575,8 +583,8 @@ namespace AutoVolumeControl
         }
 
         /// <summary>
-        /// Makes the scale bar and the Exit button as wide as the menu: the widest other item, or the widest minimum
-        /// width of the two.
+        /// Makes the scale bar, the app rows and the Exit button as wide as the menu: the widest other item, or the
+        /// widest minimum width of these.
         /// </summary>
         private void FitFullWidthItems()
         {

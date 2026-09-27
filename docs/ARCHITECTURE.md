@@ -131,7 +131,8 @@ a change made elsewhere that the menu does not show yet still does.
 Rows: `[checkbox] [icon] name  [slider 0–100 %]` in a `TableLayoutPanel`. Clicking the icon or the name toggles the
 checkbox; the slider is disabled while the app is unchecked. The table keeps the menu's background color: the
 checkboxes and sliders fill their background with their parent's color, and a transparent one renders black. The
-Exit button spans the menu.
+rows span the menu (like the scale bar and the Exit button): checkbox, icon and name on the left, the slider
+aligned right, the name column takes the remaining width.
 
 The slider (`RatioSlider`) reports every step while dragging. Each step takes effect
 immediately (in memory, `AppPreferences.SetRatioPercent(..., persist: false)`, which raises `Changed`, and the

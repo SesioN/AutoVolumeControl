@@ -823,6 +823,26 @@ namespace AutoVolumeControl.Tests
         }
 
         [Fact]
+        public void AppRows_SpanTheMenu_WithTheSliderOnTheRight()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "chrome", "an-app-with-a-rather-long-executable-name" });
+                CreateMenu(strip).Generate();
+
+                var table = FindControl<TableLayoutPanel>(strip, MenuHandler.AppTableName);
+                var bar = FindNested<TableLayoutPanel>(strip, MenuHandler.ScaleBarName);
+                Assert.Equal(bar.Width, table.Width);
+                Assert.Equal(FindExitButton(strip).Parent.Width, table.Width);
+                Assert.Equal(SizeType.Percent, table.ColumnStyles[2].SizeType);
+                Assert.Equal(AnchorStyles.Right, FindSlider(strip, "chrome").Anchor);
+                Assert.Equal(AnchorStyles.Left, FindControl<Label>(strip, MenuHandler.LabelName("chrome")).Anchor);
+                Assert.Equal(AnchorStyles.Left, FindCheckbox(strip, "chrome").Anchor);
+            });
+        }
+
+        [Fact]
         public void ScaleBar_IsSmallerThanTheRestOfTheMenu()
         {
             Sta.Run(() =>
