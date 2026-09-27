@@ -842,6 +842,86 @@ namespace AutoVolumeControl.Tests
             });
         }
 
+        [Theory]
+        [InlineData(85)]
+        [InlineData(100)]
+        [InlineData(115)]
+        [InlineData(130)]
+        public void EveryItem_FitsInItsPlace_SoNothingCoversASeparator(int percent)
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "chrome", "spotify", "discord" });
+                scale.SetPercent(percent);
+                CreateMenu(strip).Generate();
+                strip.Show(0, 0);
+                try
+                {
+                    Sta.PumpUntil(() => false, 100);
+                    foreach (var host in strip.Items.OfType<ToolStripControlHost>())
+                    {
+                        var control = host.Control;
+                        Assert.True(control.Height <= host.Height, $"{control.Name}: {control.Height} is taller than its item ({host.Height})");
+                        Assert.True(control.Top >= host.Bounds.Top && control.Bottom <= host.Bounds.Bottom,
+                            $"{control.Name}: {control.Bounds} is outside its item {host.Bounds}");
+                        foreach (Control child in control.Controls)
+                            Assert.True(child.Bottom <= control.ClientSize.Height, $"{child.Name}: bottom {child.Bottom} is below {control.Name} ({control.ClientSize.Height})");
+                    }
+                }
+                finally
+                {
+                    strip.Close();
+                }
+            });
+        }
+
+        [Fact]
+        public void Rebuilds_DoNotMakeTheMenuWider()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                apps.Update(new[] { "chrome", "spotify" });
+                var menu = CreateMenu(strip);
+                strip.Show(0, 0);
+                try
+                {
+                    int width = strip.Width;
+                    foreach (var percent in new[] { 130, 85, 115, 100, 130, 100 })
+                    {
+                        scale.SetPercent(percent);
+                        Assert.True(menu.Generate());
+                    }
+
+                    // Back at 100 %: exactly as wide as the first time.
+                    Assert.Equal(width, strip.Width);
+
+                    scale.SetPercent(85);
+                    menu.Generate();
+                    Assert.True(strip.Width < width, $"At 85 % the menu ({strip.Width}) is not narrower than at 100 % ({width})");
+                }
+                finally
+                {
+                    strip.Close();
+                }
+            });
+        }
+
+        [Fact]
+        public void Separators_DoNotAskForTheMenusWidth()
+        {
+            Sta.Run(() =>
+            {
+                using var strip = new ContextMenuStrip();
+                CreateMenu(strip).Generate();
+                strip.Width = 2000;
+
+                Assert.All(strip.Items.OfType<ToolStripSeparator>(), separator =>
+                    Assert.True(separator.GetPreferredSize(System.Drawing.Size.Empty).Width < 10));
+            });
+        }
+
         [Fact]
         public void ScaleBar_IsSmallerThanTheRestOfTheMenu()
         {

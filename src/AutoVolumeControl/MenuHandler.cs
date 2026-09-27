@@ -292,11 +292,9 @@ namespace AutoVolumeControl
 
             // No transparent BackColor here: the checkboxes and sliders fill their background with their parent's
             // BackColor, and a transparent one comes out black. The table takes the menu's color instead.
-            var table = new TableLayoutPanel
+            var table = new MenuTable
             {
                 BackColor = contextMenuStrip.BackColor,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 ColumnCount = 4,
                 RowCount = appList.Count,
                 Name = AppTableName,
@@ -312,15 +310,11 @@ namespace AutoVolumeControl
                 AddAppRow(table, row, appList[row]);
             }
 
-            // The rows span the menu: checkbox, icon and name on the left, the slider on the right, the name column
-            // takes the remaining width. The natural size is the minimum (see FitFullWidthItems).
-            var natural = table.GetPreferredSize(Size.Empty);
-            table.AutoSize = false;
+            // The rows span the menu (see FitFullWidthItems): checkbox, icon and name on the left, the slider on the
+            // right, the name column takes the remaining width.
             table.ColumnStyles[2] = new ColumnStyle(SizeType.Percent, 100);
-            table.Size = natural;
-            table.MinimumSize = natural;
 
-            contextMenuStrip.Items.Add(new FullWidthControlHost(table) { AutoSize = false, Margin = Padding.Empty });
+            contextMenuStrip.Items.Add(new FullWidthControlHost(table));
             return true;
         }
 
@@ -504,11 +498,10 @@ namespace AutoVolumeControl
             smallIcon.Margin = new Padding(side, Math.Max(0, trackCenter - smallIcon.PreferredHeight / 2), Scale(2), 0);
             largeIcon.Margin = new Padding(Scale(2), Math.Max(0, trackCenter - largeIcon.PreferredHeight / 2), side, 0);
 
-            var bar = new TableLayoutPanel
+            var bar = new MenuTable
             {
                 Name = ScaleBarName,
                 BackColor = contextMenuStrip.BackColor,
-                AutoSize = false,
                 ColumnCount = 3,
                 RowCount = 1,
                 Margin = Padding.Empty,
@@ -517,17 +510,13 @@ namespace AutoVolumeControl
             bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            bar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            bar.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             bar.Controls.Add(smallIcon, 0, 0);
             bar.Controls.Add(slider, 1, 0);
             bar.Controls.Add(largeIcon, 2, 0);
-            bar.Height = bar.Padding.Vertical + slider.Height;
-            // Its width follows the menu (see FitFullWidthItems); the slider keeps at least its minimum width.
-            bar.MinimumSize = new Size(
-                smallIcon.PreferredWidth + smallIcon.Margin.Horizontal + slider.Width + largeIcon.PreferredWidth + largeIcon.Margin.Horizontal,
-                bar.Height);
 
-            contextMenuStrip.Items.Add(new FullWidthControlHost(bar) { AutoSize = false, Margin = Padding.Empty });
+            // Its width follows the menu (see FitFullWidthItems); the slider keeps at least its minimum width.
+            contextMenuStrip.Items.Add(new FullWidthControlHost(bar));
         }
 
         private void OnAutoRunCheckBoxChanged(MenuCheckBox checkbox)
@@ -576,10 +565,11 @@ namespace AutoVolumeControl
                 Width = Scale(ExitButtonWidth) + 2 * spacing,
                 Height = button.Height + 2 * spacing,
             };
+            // Its natural size (a panel does not measure a docked button).
             panel.MinimumSize = panel.Size;
             panel.Controls.Add(button);
 
-            contextMenuStrip.Items.Add(new FullWidthControlHost(panel) { AutoSize = false, Margin = Padding.Empty });
+            contextMenuStrip.Items.Add(new FullWidthControlHost(panel));
         }
 
         /// <summary>
@@ -590,26 +580,34 @@ namespace AutoVolumeControl
         {
             var items = contextMenuStrip.Items.Cast<ToolStripItem>().ToList();
             var fullWidth = items.OfType<FullWidthControlHost>().ToList();
+            // The size each control needs for its content (at least its minimum size).
+            var natural = fullWidth.ToDictionary(host => host, host =>
+            {
+                var preferred = host.Control.GetPreferredSize(Size.Empty);
+                return new Size(
+                    Math.Max(preferred.Width, host.Control.MinimumSize.Width),
+                    Math.Max(preferred.Height, host.Control.MinimumSize.Height));
+            });
+            // Separators take the menu's width, they do not set it.
             int width = items.Except(fullWidth)
+                .Where(item => !(item is ToolStripSeparator))
                 .Select(item => item.GetPreferredSize(Size.Empty).Width + item.Margin.Horizontal)
-                .Concat(fullWidth.Select(host => host.Control.MinimumSize.Width))
+                .Concat(natural.Values.Select(size => size.Width))
                 .DefaultIfEmpty(0)
                 .Max();
 
             foreach (var host in fullWidth)
             {
-                var control = host.Control;
-                // The host's layout may ask the control for its preferred size, which would otherwise be too small.
-                control.MinimumSize = new Size(width, control.Height);
-                control.Width = width;
-                host.Width = width;
-                host.Height = control.Height;
+                var size = new Size(width, natural[host].Height);
+                host.Control.MinimumSize = size;
+                host.Control.Size = size;
+                host.Size = size;
             }
         }
 
         private void AddSeparator()
         {
-            contextMenuStrip.Items.Add(new ToolStripSeparator
+            contextMenuStrip.Items.Add(new MenuSeparator
             {
                 Margin = new Padding(0, Scale(2), 0, Scale(2)),
             });
@@ -624,6 +622,15 @@ namespace AutoVolumeControl
     {
         public FullWidthControlHost(Control control) : base(control)
         {
+            AutoSize = false;
+            Margin = Padding.Empty;
+            // The item always takes the control's height (e.g. when a MenuTable grew to its content), so the control
+            // cannot cover the item below.
+            control.SizeChanged += (sender, e) =>
+            {
+                if (Owner != null && Height != control.Height + Padding.Vertical)
+                    Height = control.Height + Padding.Vertical;
+            };
         }
 
         protected override void OnBoundsChanged()

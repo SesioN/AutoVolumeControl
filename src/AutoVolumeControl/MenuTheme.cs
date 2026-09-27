@@ -78,4 +78,15 @@ namespace AutoVolumeControl
             e.Graphics.DrawLine(pen, 0, y, bounds.Width, y);
         }
     }
+
+    /// <summary>
+    /// A separator that does not ask for any width. A plain one in a drop-down asks for the menu's current width, so
+    /// the menu could never get narrower again (e.g. after choosing a smaller size) and every rebuild that sized its
+    /// items after the widest item would make it wider.
+    /// </summary>
+    sealed class MenuSeparator : ToolStripSeparator
+    {
+        public override Size GetPreferredSize(Size constrainingSize) =>
+            new Size(1, base.GetPreferredSize(constrainingSize).Height);
+    }
 }

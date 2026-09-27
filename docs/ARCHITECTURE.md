@@ -147,7 +147,10 @@ Everything in the menu is sized at 96 DPI and 100 % and multiplied by `DeviceDpi
 checkboxes, sliders, icons, spacing, the Exit button and so the menu itself. The scale bar below the title is a
 slider over the four sizes (labelled 85 %–130 %) between a small and a large "A" (clicking a letter moves one
 step), drawn at 80 % of the menu's size. Like the Exit button it spans the menu: both are sized to the widest
-other item (`FitFullWidthItems`) and stretched by `FullWidthControlHost`. While the slider is dragged it only marks
+other item (`FitFullWidthItems`; separators do not count, and `MenuSeparator` asks for no width, since a
+plain separator asks for the menu's current width and the menu would grow with every rebuild) and stretched by
+`FullWidthControlHost`, which also takes over any height change of its control. The app table and the scale bar
+are `MenuTable`s, which grow to their content after each layout, so a row can never cover the separator below. While the slider is dragged it only marks
 the step; the size is stored and the menu rebuilt when the slider is released, since a rebuild replaces the slider
 under the mouse. A click on the track or the mouse wheel applies immediately. The rebuild runs from the
 deferred-rebuild timer, never inside the slider's own event. When the open menu changes its size it keeps the
