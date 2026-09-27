@@ -7,12 +7,23 @@
 A small Windows tray application that keeps the volume and mute state of selected applications in sync with the
 master volume of the default playback device.
 
-Windows gives every application its own volume in the volume mixer, and many apps (browsers, music players, games)
-reset or change it themselves. AutoVolumeControl ties them back to the master volume, so a single volume key controls
-everything, while each app can still play at its own share of it.
+## Why?
+
+Some audio devices ignore the Windows master volume on certain outputs. The classic example is the **digital (optical /
+S/PDIF) output of Creative Sound Blaster devices** such as the Sound BlasterX G6: the volume bar in Windows, the volume
+keys on the keyboard and even the volume knob on the device do nothing, and the signal always leaves the device at
+full level. The only volume that still has an effect there is the **per-app volume** in the Windows volume mixer.
+
+AutoVolumeControl bridges that gap. It watches the master volume of the default playback device and applies it to the
+volume of every running app. The master volume bar, your keyboard's volume keys and the knob on the device work
+again, and mute works too.
+
+It is also useful without such a device, e.g. to keep apps that reset their own volume (browsers, games, music
+players) tied to the master volume, or to let one app always play at a fixed share of it.
 
 ## Table of contents
 
+- [Why?](#why)
 - [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
@@ -43,15 +54,21 @@ everything, while each app can still play at its own share of it.
 
 ## Installation
 
-Requirements: Windows 7 or later with [.NET Framework 4.8](https://dotnet.microsoft.com/download/dotnet-framework/net48)
-(included in Windows 10 1903 and later).
+Requirements: Windows 10 or 11 with [.NET Framework 4.8](https://dotnet.microsoft.com/download/dotnet-framework/net48)
+(included since Windows 10 version 1903). Windows 7 and 8.1 with .NET Framework 4.8 should work but are not tested.
 
 1. Download `AutoVolumeControl.exe` from the [latest release](https://github.com/SesioN/AutoVolumeControl/releases/latest).
 2. Put it in a permanent location, e.g. `%LOCALAPPDATA%\Programs\AutoVolumeControl\`.
 3. Start it. The app runs in the notification area (system tray).
 
+Only download AutoVolumeControl from the [releases page](https://github.com/SesioN/AutoVolumeControl/releases). Every
+release is built from the tagged source by [GitHub Actions](.github/workflows/build.yml), and its notes list the
+SHA-256 checksum of the executable, so you can check your download with `Get-FileHash AutoVolumeControl.exe` in
+PowerShell.
+
 The executable is not code-signed, so Windows SmartScreen may show a warning on the first start. Choose
-**More info → Run anyway** if you trust the download, or build it yourself from source.
+**More info → Run anyway** if you trust the download, or build it yourself from source. For the same reason a few
+antivirus engines may flag it as a false positive.
 
 ## Usage
 
