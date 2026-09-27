@@ -18,14 +18,15 @@ namespace AutoVolumeControl.Tests
             runKey.Dispose();
         }
 
-        private VolumeControl Create(TimeSpan? errorDelay = null)
+        private VolumeControl Create(TimeSpan? errorDelay = null, TimeSpan? retryInterval = null)
         {
             return new VolumeControl(
                 backend,
                 new AppSettings(settingsKey.Path),
                 new AutoStart("AutoVolumeControl", @"C:\Apps\AutoVolumeControl.exe", runKey.Path),
                 showTrayIcon: false,
-                errorDelay ?? TimeSpan.FromMilliseconds(200));
+                errorDelay ?? TimeSpan.FromMilliseconds(200),
+                retryInterval ?? TimeSpan.FromMilliseconds(50));
         }
 
         private static bool MenuShowsApp(ContextMenuStrip strip, string app)
@@ -102,12 +103,12 @@ namespace AutoVolumeControl.Tests
             Sta.Run(() =>
             {
                 backend.AttachException = new InvalidOperationException("service not ready");
-                using var app = Create(TimeSpan.FromSeconds(5));
+                using var app = Create(errorDelay: TimeSpan.FromSeconds(1), retryInterval: TimeSpan.FromMilliseconds(50));
                 Assert.Throws<AggregateException>(() => app.Started.Wait(TimeSpan.FromSeconds(10)));
 
-                // The service retries after 3 s and succeeds before the 5 s error delay ends.
+                // The service retries every ~50 ms and succeeds long before the 1 s error delay ends.
                 backend.AttachException = null;
-                Sta.PumpUntil(() => false, 5500);
+                Sta.PumpUntil(() => false, 1500);
 
                 Assert.Null(app.ShownError);
             });

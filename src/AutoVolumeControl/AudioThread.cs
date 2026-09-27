@@ -77,10 +77,10 @@ namespace AutoVolumeControl
             if (Interlocked.Exchange(ref disposed, 1) != 0)
                 return;
 
+            // The queue is not disposed: a Post racing with Dispose must see a completed queue, not a disposed one.
             queue.CompleteAdding();
-            // Only dispose the queue once the thread is done with it; if it hangs, leave it to the GC.
-            if (!IsCurrentThread && thread.Join(TimeSpan.FromSeconds(5)))
-                queue.Dispose();
+            if (!IsCurrentThread)
+                thread.Join(TimeSpan.FromSeconds(2));
         }
     }
 }

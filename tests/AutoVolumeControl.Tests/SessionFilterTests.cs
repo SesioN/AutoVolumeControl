@@ -1,4 +1,4 @@
-using CSCore.CoreAudioAPI;
+using AutoVolumeControl.Interop;
 using Xunit;
 
 namespace AutoVolumeControl.Tests
@@ -9,11 +9,11 @@ namespace AutoVolumeControl.Tests
             @"{0.0.0.00000000}.{guid}|\Device\HarddiskVolume3\Users\me\AppData\Roaming\Spotify\Spotify.exe%b{00000000-0000-0000-0000-000000000000}";
 
         [Theory]
-        [InlineData(AudioSessionState.AudioSessionStateActive, false, true)]
-        [InlineData(AudioSessionState.AudioSessionStateInactive, false, true)]
-        [InlineData(AudioSessionState.AudioSessionStateExpired, false, false)]
-        [InlineData(AudioSessionState.AudioSessionStateActive, true, false)]
-        [InlineData(AudioSessionState.AudioSessionStateInactive, true, false)]
+        [InlineData(AudioSessionState.Active, false, true)]
+        [InlineData(AudioSessionState.Inactive, false, true)]
+        [InlineData(AudioSessionState.Expired, false, false)]
+        [InlineData(AudioSessionState.Active, true, false)]
+        [InlineData(AudioSessionState.Inactive, true, false)]
         public void OnlySessionsOfRunningAppsAreKept(AudioSessionState state, bool processExited, bool expected)
         {
             Assert.Equal(expected, SessionFilter.BelongsToRunningApp(state, processExited));

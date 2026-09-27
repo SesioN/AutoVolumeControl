@@ -1,5 +1,5 @@
 using System;
-using CSCore.CoreAudioAPI;
+using AutoVolumeControl.Interop;
 
 namespace AutoVolumeControl
 {
@@ -8,7 +8,7 @@ namespace AutoVolumeControl
         /// <summary>Windows keeps sessions of closed apps around for a while; they are neither listed nor synced.</summary>
         public static bool BelongsToRunningApp(AudioSessionState state, bool processExited)
         {
-            return state != AudioSessionState.AudioSessionStateExpired && !processExited;
+            return state != AudioSessionState.Expired && !processExited;
         }
 
         /// <summary>

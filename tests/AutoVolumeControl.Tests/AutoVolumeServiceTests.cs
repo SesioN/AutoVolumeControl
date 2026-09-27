@@ -106,10 +106,9 @@ namespace AutoVolumeControl.Tests
         [InlineData(1, 3)]
         [InlineData(2, 6)]
         [InlineData(3, 12)]
-        [InlineData(5, 48)]
-        [InlineData(6, 60)]
-        [InlineData(1000, 60)]
-        public void RetryDelay_DoublesUpToOneMinute(int failures, int expectedSeconds)
+        [InlineData(4, 15)]
+        [InlineData(1000, 15)]
+        public void RetryDelay_DoublesUpTo15Seconds(int failures, int expectedSeconds)
         {
             Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), AutoVolumeService.RetryDelay(TimeSpan.FromSeconds(3), failures));
         }
@@ -121,6 +120,7 @@ namespace AutoVolumeControl.Tests
             try { service.Start().Wait(Timeout); } catch (AggregateException) { }
 
             // 50 ms interval: attempts at about 0, 50, 150, 350, 750 ms. Without backoff there would be ~20.
+            // (The 15 s cap does not apply here because the interval is far below it.)
             Thread.Sleep(1000);
 
             Assert.InRange(backend.AttachCount, 2, 8);
@@ -287,7 +287,7 @@ namespace AutoVolumeControl.Tests
             }
 
             // Every correction towards the same 0.4 counts, including the one at start.
-            Assert.Equal(CorrectionThrottle.MaxRepeatedCorrections, game.VolumeWrites);
+            Assert.Equal(CorrectionThrottle.DefaultMaxRepeatedCorrections, game.VolumeWrites);
         }
 
         [Fact]
@@ -310,6 +310,29 @@ namespace AutoVolumeControl.Tests
             Flush();
 
             Assert.Equal(0.2f, chrome.Volume);
+            // The paused app follows the master too: only its own resets are ignored.
+            Assert.Equal(0.2f, game.Volume);
+        }
+
+        [Fact]
+        public void PausedApp_IsCorrectedAgainWhenThePauseEnds()
+        {
+            using var shortPause = new AutoVolumeService(backend, preferences, apps, RetryInterval,
+                new CorrectionThrottle(pause: TimeSpan.FromMilliseconds(300)));
+            var game = new FakeSession("game");
+            backend.SetSessions(game);
+            backend.SetMaster(0.4f, false);
+            Assert.True(shortPause.Start().Wait(Timeout));
+            for (int i = 0; i < 20; i++)
+            {
+                game.ChangeOwnVolume(1f);
+                backend.RaiseSessionsChanged();
+                Assert.True(shortPause.Flush().Wait(Timeout));
+            }
+            Assert.Equal(1f, game.Volume);
+
+            // The app gave up fighting; no further event arrives, yet it is corrected after the pause.
+            WaitUntil(() => Math.Abs(game.Volume - 0.4f) < 0.001f, "the pause end should trigger a correction");
         }
 
         [Fact]
@@ -438,6 +461,31 @@ namespace AutoVolumeControl.Tests
 
             Assert.Equal(new[] { "chrome" }, apps.GetApps());
             Assert.Equal(0.7f, chrome.Volume);
+        }
+
+        [Fact]
+        public void RefreshAsync_ReReadsTheSessionList()
+        {
+            // Opening the menu corrects anything a missed notification left behind.
+            StartAttached();
+            int invalidations = backend.InvalidateCount;
+
+            Assert.True(service.RefreshAsync().Wait(Timeout));
+
+            Assert.Equal(invalidations + 1, backend.InvalidateCount);
+        }
+
+        [Fact]
+        public void LastError_IsTheMostRecentFailure()
+        {
+            backend.AttachException = new InvalidOperationException("first");
+            try { service.Start().Wait(Timeout); } catch (AggregateException) { }
+            backend.AttachException = new InvalidOperationException("second");
+
+            WaitUntil(() => service.LastError?.Message == "second", "the retry should record its own failure");
+
+            backend.AttachException = null;
+            WaitUntil(() => service.LastError == null, "a successful retry should clear the error");
         }
 
         [Fact]

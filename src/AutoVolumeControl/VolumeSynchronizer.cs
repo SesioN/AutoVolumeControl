@@ -7,6 +7,8 @@ namespace AutoVolumeControl
     /// <summary>One audio session of a running app on the playback device.</summary>
     interface IAudioSession : IDisposable
     {
+        /// <summary>Unique per session instance (several sessions can share one app name).</summary>
+        string Id { get; }
         string Name { get; }
         bool IsSystemSound { get; }
         float Volume { get; set; }
@@ -43,7 +45,7 @@ namespace AutoVolumeControl
                     if (!volumeDiffers && !muteDiffers)
                         continue;
 
-                    if (throttle != null && !throttle.Allow(session.Name, masterVolume, muted))
+                    if (throttle != null && !throttle.Allow(session.Id ?? session.Name, masterVolume, muted))
                         continue;
 
                     if (volumeDiffers)

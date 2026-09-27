@@ -5,7 +5,8 @@ using System.IO;
 using System.Linq;
 using System.Media;
 using System.Threading;
-using CSCore.CoreAudioAPI;
+using System.Runtime.InteropServices;
+using AutoVolumeControl.Interop;
 using Microsoft.CSharp;
 using Xunit;
 
@@ -16,7 +17,7 @@ namespace AutoVolumeControl.Tests
     /// it starts are changed; the master volume and other apps are never touched.
     /// Skipped when no playback device exists.
     /// </summary>
-    [Collection("CoreAudio")]
+    [Collection(IsolatedCollection.Name)]
     public class CoreAudioBackendTests
     {
         private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
@@ -27,9 +28,17 @@ namespace AutoVolumeControl.Tests
             bool available;
             try
             {
-                using var enumerator = new MMDeviceEnumerator();
-                using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                available = device != null;
+                var enumerator = CoreAudio.CreateDeviceEnumerator();
+                try
+                {
+                    enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia, out var device);
+                    available = device != null;
+                    CoreAudio.Release(device);
+                }
+                finally
+                {
+                    CoreAudio.Release(enumerator);
+                }
             }
             catch (Exception)
             {
@@ -95,6 +104,56 @@ namespace AutoVolumeControl.Tests
             Assert.InRange(volume, 0f, 1f);
             Assert.NotNull(SessionNames(audioThread, backend));
             audioThread.Post(backend.Dispose).Wait(Timeout);
+        }
+
+        [SkippableFact]
+        public void SystemSoundsSession_IsWatched_ButNotListedAsApp()
+        {
+            // Its disconnect notification reveals an audio service restart even when no app plays audio.
+            SkipWithoutPlaybackDevice();
+            using var audioThread = new AudioThread();
+            var backend = new CoreAudioBackend();
+            try
+            {
+                var sessions = audioThread.Post(() =>
+                {
+                    backend.Attach();
+                    return backend.GetSessions().Select(s => (s.Name, s.IsSystemSound)).ToList();
+                }).Result;
+                Skip.IfNot(sessions.Any(s => s.IsSystemSound), "No system sounds session on this device.");
+
+                int watched = audioThread.Post(() => backend.WatchedSessionCount).Result;
+                Assert.Equal(sessions.Count, watched);
+            }
+            finally
+            {
+                audioThread.Post(backend.Dispose).Wait(Timeout);
+            }
+        }
+
+        [SkippableFact]
+        public void InvalidateSessions_ReReadsTheList()
+        {
+            SkipWithoutPlaybackDevice();
+            using var audioThread = new AudioThread();
+            var backend = new CoreAudioBackend();
+            try
+            {
+                audioThread.Post(() =>
+                {
+                    backend.Attach();
+                    var first = backend.GetSessions().Select(s => s.Id).OrderBy(i => i).ToList();
+                    backend.InvalidateSessions();
+                    var second = backend.GetSessions().Select(s => s.Id).OrderBy(i => i).ToList();
+                    // Same sessions, same watches: re-reading keeps existing watches instead of recreating them.
+                    Assert.Equal(first, second);
+                    Assert.Equal(first.Count, backend.WatchedSessionCount);
+                }).Wait(Timeout);
+            }
+            finally
+            {
+                audioThread.Post(backend.Dispose).Wait(Timeout);
+            }
         }
 
         [SkippableFact]
@@ -164,7 +223,7 @@ namespace AutoVolumeControl.Tests
                 Skip.If(own == null, "Could not create an audio session for the test process.");
 
                 audioThread.Post(() => { own.Volume = 0.37f; }).Wait(Timeout);
-                Assert.Equal(0.37f, ReadOwnSessionVolume(audioThread), 2);
+                Assert.Equal(0.37f, audioThread.Post(() => { using var raw = RawOwnSession.Open(); return raw.Volume; }).Result, 2);
                 Assert.Equal(0.37f, audioThread.Post(() => own.Volume).Result, 2);
 
                 audioThread.Post(() => { own.Volume = 1f; own.Dispose(); }).Wait(Timeout);
@@ -187,29 +246,22 @@ namespace AutoVolumeControl.Tests
             audioThread.Post(backend.Attach).Wait(Timeout);
 
             using var silence = PlaySilence();
-            AudioSessionControl rawSession = null;
-            AudioSessionControl2 rawControl = null;
-            MMDeviceEnumerator rawEnumerator = null;
-            MMDevice rawDevice = null;
-            AudioSessionManager2 rawManager = null;
+            RawOwnSession raw = null;
             try
             {
                 var own = FindSession(audioThread, backend, OwnProcessName);
                 Skip.If(own == null, "Could not create an audio session for the test process.");
 
-                var notifications = new System.Collections.Concurrent.ConcurrentQueue<(float Volume, Guid Context)>();
+                var events = new RecordingSessionEvents();
                 audioThread.Post(() =>
                 {
-                    rawEnumerator = new MMDeviceEnumerator();
-                    rawDevice = rawEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                    rawManager = AudioSessionManager2.FromMMDevice(rawDevice);
-                    rawControl = OwnSessionControl(rawManager, out rawSession);
-                    rawSession.SimpleVolumeChanged += (s, e) => notifications.Enqueue((e.NewVolume, e.EventContext));
+                    raw = RawOwnSession.Open();
+                    raw.Control.RegisterAudioSessionNotification(events);
                 }).Wait(Timeout);
 
                 bool Seen(float volume, out Guid context)
                 {
-                    var match = notifications.FirstOrDefault(n => Math.Abs(n.Volume - volume) < 0.001f);
+                    var match = events.VolumeChanges.FirstOrDefault(n => Math.Abs(n.Volume - volume) < 0.001f);
                     context = match.Context;
                     return match != default;
                 }
@@ -219,22 +271,22 @@ namespace AutoVolumeControl.Tests
                 Seen(0.25f, out var ownContext);
                 Assert.Equal(CoreAudioBackend.EventContext, ownContext);
 
-                SetOwnSessionVolumeAsApp(audioThread, 0.75f);
-                Assert.True(WaitFor(() => Seen(0.75f, out _), TimeSpan.FromSeconds(3)), "No notification for the app's write.");
+                audioThread.Post(() => { raw.Volume = 0.75f; }).Wait(Timeout);
+                Assert.True(WaitFor(() => Seen(0.75f, out _), TimeSpan.FromSeconds(3)), "No notification for the change by the app.");
                 Seen(0.75f, out var appContext);
                 Assert.NotEqual(CoreAudioBackend.EventContext, appContext);
 
-                audioThread.Post(() => { own.Volume = 1f; own.Dispose(); }).Wait(Timeout);
+                audioThread.Post(() =>
+                {
+                    raw.Control.UnregisterAudioSessionNotification(events);
+                    own.Volume = 1f;
+                }).Wait(Timeout);
             }
             finally
             {
                 audioThread.Post(() =>
                 {
-                    rawControl?.Dispose();
-                    rawSession?.Dispose();
-                    rawManager?.Dispose();
-                    rawDevice?.Dispose();
-                    rawEnumerator?.Dispose();
+                    raw?.Dispose();
                     backend.Dispose();
                 }).Wait(Timeout);
             }
@@ -256,7 +308,7 @@ namespace AutoVolumeControl.Tests
                 int changes = 0;
                 backend.SessionsChanged += (s, e) => Interlocked.Increment(ref changes);
 
-                SetOwnSessionVolumeAsApp(audioThread, 0.6f);
+                audioThread.Post(() => { using var raw = RawOwnSession.Open(); raw.Volume = 0.6f; }).Wait(Timeout);
 
                 Assert.True(WaitFor(() => Volatile.Read(ref changes) > 0, TimeSpan.FromSeconds(3)), "No notification for an external volume change.");
                 audioThread.Post(() => { own.Volume = 1f; own.Dispose(); }).Wait(Timeout);
@@ -363,50 +415,100 @@ namespace AutoVolumeControl.Tests
             audioThread.Post(backend.Dispose).Wait(Timeout);
         }
 
-        private static AudioSessionControl2 OwnSessionControl(AudioSessionManager2 manager, out AudioSessionControl owner)
+        /// <summary>
+        /// This process's own session, opened directly through the Core Audio API (not through the backend), to
+        /// act as "the app" changing its own volume and to observe raw notifications.
+        /// </summary>
+        private sealed class RawOwnSession : IDisposable
         {
-            int pid = Process.GetCurrentProcess().Id;
-            using var sessions = manager.GetSessionEnumerator();
-            foreach (var session in sessions)
+            private IMMDeviceEnumerator enumerator;
+            private IMMDevice device;
+            private IAudioSessionManager2 manager;
+
+            public IAudioSessionControl2 Control { get; private set; }
+
+            public static RawOwnSession Open()
             {
-                var control = session.QueryInterface<AudioSessionControl2>();
-                if (control.ProcessID == pid)
+                var raw = new RawOwnSession();
+                try
                 {
-                    owner = session;
-                    return control;
+                    raw.enumerator = CoreAudio.CreateDeviceEnumerator();
+                    raw.enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia, out raw.device);
+                    raw.manager = CoreAudio.Activate<IAudioSessionManager2>(raw.device, CoreAudio.AudioSessionManager2Id);
+                    raw.manager.GetSessionEnumerator(out var sessions);
+                    try
+                    {
+                        int pid = Process.GetCurrentProcess().Id;
+                        sessions.GetCount(out int count);
+                        for (int i = 0; i < count && raw.Control == null; i++)
+                        {
+                            sessions.GetSession(i, out var session);
+                            var control = (IAudioSessionControl2)session;
+                            control.GetProcessId(out int sessionPid);
+                            if (sessionPid == pid)
+                                raw.Control = control;
+                            else
+                                CoreAudio.Release(session);
+                        }
+                    }
+                    finally
+                    {
+                        CoreAudio.Release(sessions);
+                    }
+                    if (raw.Control == null)
+                        throw new InvalidOperationException("Own session not found.");
+                    return raw;
                 }
-                control.Dispose();
-                session.Dispose();
+                catch
+                {
+                    raw.Dispose();
+                    throw;
+                }
             }
-            throw new InvalidOperationException("Own session not found.");
+
+            /// <summary>Read and written without an event context, like any other app would.</summary>
+            public float Volume
+            {
+                get
+                {
+                    ((ISimpleAudioVolume)Control).GetMasterVolume(out float value);
+                    return value;
+                }
+                set
+                {
+                    var context = Guid.Empty;
+                    ((ISimpleAudioVolume)Control).SetMasterVolume(value, ref context);
+                }
+            }
+
+            public void Dispose()
+            {
+                CoreAudio.Release(Control);
+                CoreAudio.Release(manager);
+                CoreAudio.Release(device);
+                CoreAudio.Release(enumerator);
+            }
         }
 
-        private static float ReadOwnSessionVolume(AudioThread audioThread)
+        [ComVisible(true)]
+        [ClassInterface(ClassInterfaceType.None)]
+        private sealed class RecordingSessionEvents : IAudioSessionEvents
         {
-            return audioThread.Post(() =>
-            {
-                using var enumerator = new MMDeviceEnumerator();
-                using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                using var manager = AudioSessionManager2.FromMMDevice(device);
-                using var control = OwnSessionControl(manager, out var session);
-                using (session)
-                using (var volume = session.QueryInterface<SimpleAudioVolume>())
-                    return volume.MasterVolume;
-            }).Result;
-        }
+            public System.Collections.Concurrent.ConcurrentQueue<(float Volume, Guid Context)> VolumeChanges { get; } =
+                new System.Collections.Concurrent.ConcurrentQueue<(float Volume, Guid Context)>();
 
-        private static void SetOwnSessionVolumeAsApp(AudioThread audioThread, float value)
-        {
-            audioThread.Post(() =>
+            public int OnSimpleVolumeChanged(float newVolume, bool newMute, IntPtr eventContext)
             {
-                using var enumerator = new MMDeviceEnumerator();
-                using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                using var manager = AudioSessionManager2.FromMMDevice(device);
-                using var control = OwnSessionControl(manager, out var session);
-                using (session)
-                using (var volume = session.QueryInterface<SimpleAudioVolume>())
-                    volume.MasterVolume = value;
-            }).Wait(Timeout);
+                VolumeChanges.Enqueue((newVolume, CoreAudio.ReadGuid(eventContext)));
+                return 0;
+            }
+
+            public int OnDisplayNameChanged(string newDisplayName, IntPtr eventContext) => 0;
+            public int OnIconPathChanged(string newIconPath, IntPtr eventContext) => 0;
+            public int OnChannelVolumeChanged(int channelCount, IntPtr newChannelVolumes, int changedChannel, IntPtr eventContext) => 0;
+            public int OnGroupingParamChanged(IntPtr newGroupingParam, IntPtr eventContext) => 0;
+            public int OnStateChanged(AudioSessionState newState) => 0;
+            public int OnSessionDisconnected(AudioSessionDisconnectReason disconnectReason) => 0;
         }
 
         private static byte[] SilentWav()

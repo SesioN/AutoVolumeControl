@@ -65,14 +65,16 @@ namespace AutoVolumeControl.Tests
         private float volume;
         private bool muted;
 
-        public FakeSession(string name, bool isSystemSound = false, float volume = 1f, bool muted = false)
+        public FakeSession(string name, bool isSystemSound = false, float volume = 1f, bool muted = false, string id = null)
         {
+            Id = id ?? Guid.NewGuid().ToString("N");
             Name = name;
             IsSystemSound = isSystemSound;
             this.volume = volume;
             this.muted = muted;
         }
 
+        public string Id { get; }
         public string Name { get; }
         public bool IsSystemSound { get; }
         public bool ThrowOnWrite { get; set; }
@@ -126,6 +128,7 @@ namespace AutoVolumeControl.Tests
         public int AttachCount { get; private set; }
         public int GetMasterVolumeCount { get; private set; }
         public int GetSessionsCount { get; private set; }
+        public int InvalidateCount { get; private set; }
         public Exception AttachException { get; set; }
         /// <summary>Thrown by the next GetSessions calls while set (e.g. audio service restarted).</summary>
         public Exception SessionsException { get; set; }
@@ -181,6 +184,12 @@ namespace AutoVolumeControl.Tests
             {
                 return (volume, muted);
             }
+        }
+
+        public void InvalidateSessions()
+        {
+            Record();
+            InvalidateCount++;
         }
 
         public IReadOnlyList<IAudioSession> GetSessions()

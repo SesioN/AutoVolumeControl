@@ -32,9 +32,13 @@ namespace AutoVolumeControl
 
         (float Volume, bool Muted) GetMasterVolume();
 
+        /// <summary>Makes the next <see cref="GetSessions"/> re-read the session list from Windows.</summary>
+        void InvalidateSessions();
+
         /// <summary>
-        /// Returns a snapshot of the sessions of running apps (expired sessions and sessions of exited
-        /// processes are left out) and watches them for changes. The caller disposes the snapshot.
+        /// Returns the sessions of running apps (expired sessions and sessions of exited processes are left
+        /// out). The list is cached and only re-read after an event that can change it or after
+        /// <see cref="InvalidateSessions"/>. Disposing the returned sessions is allowed and may be a no-op.
         /// </summary>
         IReadOnlyList<IAudioSession> GetSessions();
     }

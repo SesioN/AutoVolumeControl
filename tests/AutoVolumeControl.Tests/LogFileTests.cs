@@ -81,6 +81,33 @@ namespace AutoVolumeControl.Tests
         }
 
         [Fact]
+        public void RotatesWhileRunning_WhenTheFileGetsTooLarge()
+        {
+            // The app runs for weeks; the size must stay bounded without a restart.
+            using (var log = LogFile.Start(directory, maxBytes: 1000))
+            {
+                for (int i = 0; i < 100; i++)
+                    log.WriteLine($"line {i} " + new string('x', 50));
+            }
+
+            Assert.True(new FileInfo(LogPath).Length <= 1000 + 200);
+            Assert.True(new FileInfo(OldPath).Length <= 1000 + 200);
+            Assert.Contains("line 99", File.ReadAllText(LogPath));
+        }
+
+        [Fact]
+        public void WriteThenWriteLine_EndUpOnOneLine()
+        {
+            using (var log = LogFile.Start(directory))
+            {
+                log.Write("first part, ");
+                log.WriteLine("second part");
+            }
+
+            Assert.Contains(File.ReadAllLines(LogPath), l => l.EndsWith(" first part, second part"));
+        }
+
+        [Fact]
         public void WriteAfterDispose_DoesNotThrow()
         {
             var log = LogFile.Start(directory);

@@ -25,11 +25,11 @@ namespace AutoVolumeControl
         private bool disposed;
 
         public VolumeControl()
-            : this(new CoreAudioBackend(), new AppSettings(), new AutoStart(Application.ProductName, Application.ExecutablePath), showTrayIcon: true, DefaultErrorNotificationDelay)
+            : this(new CoreAudioBackend(), new AppSettings(), new AutoStart(Application.ProductName, Application.ExecutablePath), showTrayIcon: true, DefaultErrorNotificationDelay, retryInterval: null)
         {
         }
 
-        internal VolumeControl(IAudioBackend backend, AppSettings appSettings, AutoStart autoStart, bool showTrayIcon, TimeSpan errorNotificationDelay)
+        internal VolumeControl(IAudioBackend backend, AppSettings appSettings, AutoStart autoStart, bool showTrayIcon, TimeSpan errorNotificationDelay, TimeSpan? retryInterval)
         {
             uiControl = new Control();
             uiControl.CreateControl();
@@ -47,7 +47,7 @@ namespace AutoVolumeControl
                 Visible = showTrayIcon
             };
 
-            service = new AutoVolumeService(backend, preferences, apps);
+            service = new AutoVolumeService(backend, preferences, apps, retryInterval);
             menuHandler = new MenuHandler(contextMenuStrip, preferences, apps, autoStart, service.RefreshAsync);
             // Exit from the button's click handler would dispose the menu while it is still processing the click.
             menuHandler.ExitRequested += (sender, e) => RunOnUiThread(() => Exit(sender, e));
@@ -59,7 +59,7 @@ namespace AutoVolumeControl
                 t => Task.Delay(errorNotificationDelay).ContinueWith(_ =>
                 {
                     if (!service.IsHealthy)
-                        ShowError(t.Exception.GetBaseException().Message);
+                        ShowError((service.LastError ?? t.Exception.GetBaseException()).Message);
                 }),
                 TaskContinuationOptions.OnlyOnFaulted);
         }

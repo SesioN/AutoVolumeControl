@@ -1,6 +1,6 @@
 # Architecture
 
-AutoVolumeControl is a Windows tray application (.NET Framework 4.8, WinForms) that keeps the
+AutoVolumeControl is a Windows tray application (.NET Framework 4.8, WinForms, MaterialSkin.2 for the menu) that keeps the
 volume and mute state of selected applications equal to the master volume of the default
 playback device.
 
@@ -42,8 +42,9 @@ flowchart LR
 | `MenuHandler` | Builds the tray menu (one checkbox per app, "Start with Windows", Exit). Rebuilds only when the content changed and disposes the old items. |
 | `AutoVolumeService` | Orchestrates everything audio related on the `AudioThread`: attach to the device, list apps, sync volumes, react to events. |
 | `AudioThread` | One long-lived MTA thread with a work queue. All COM objects are created, used and released there. |
-| `IAudioBackend` / `CoreAudioBackend` | Access to the default playback device via CSCore. Keeps one `SessionWatch` per running app session that caches its name and volume interface and forwards its events; the session list is only re-read after an event that can change it. |
+| `IAudioBackend` / `CoreAudioBackend` | Access to the default playback device via the Windows Core Audio API. Keeps one `SessionWatch` per running app session that caches its name and volume interface and forwards its events; the session list is only re-read after an event that can change it. |
 | `VolumeSynchronizer` | Writes master volume + mute to every enabled session where it differs; a failing session does not stop the others. |
+| `CoreAudioInterop` | The Core Audio COM interfaces used (from the Windows SDK headers `mmdeviceapi.h`, `endpointvolume.h`, `audiopolicy.h`). |
 | `SessionFilter` | Decides which sessions belong to running apps (not expired, process alive, process ID not reused). |
 | `AudioEventRules` | Which default-device changes and session disconnect reasons require a re-attach. |
 | `CorrectionThrottle` | Pauses corrections for an app that keeps resetting its own volume, so the two apps cannot fight in a loop. |
@@ -75,8 +76,9 @@ All audio work is one **reconcile** step on the audio thread:
    can change the list, so a master volume change costs one read plus the necessary writes;
 3. update `Apps` and register new apps (enabled by default);
 4. write volume/mute of enabled apps **only where they differ** from the master (tolerance 0.001). If an app
-   keeps resetting its own volume to something else while the master stays the same, corrections for it pause
-   for 60 s after 10 corrections within 10 s (`CorrectionThrottle`); master changes reset the count.
+   keeps resetting its own volume to something else while the master stays the same, corrections for that session
+   pause for 60 s after 10 corrections within 10 s (`CorrectionThrottle`). A master change ends the pause and is
+   always applied; when a pause ends without any event, the timer triggers the correction.
 
 `RequestSync()` merges requests: at most one reconcile is queued, and it reads the master volume when it
 runs, so a burst of notifications always ends on the latest value.
@@ -93,7 +95,7 @@ runs, so a burst of notifications always ends on the latest value.
 | Session disconnected (device removed, audio service shut down) | `IAudioSessionEvents` (app sessions and the system sounds session) | re-attach + reconcile |
 | Default device changed | `IMMNotificationClient` | re-attach + reconcile |
 | App enabled/disabled in the menu | `AppPreferences.Changed` | reconcile (enabled app synced immediately) |
-| Menu opened | `ContextMenuStrip.Opening` | reconcile (waits at most 500 ms), then `Generate()` |
+| Menu opened | `ContextMenuStrip.Opening` | session list re-read from Windows + reconcile (waits at most 500 ms), then `Generate()` |
 
 ### Failure and recovery
 
@@ -101,7 +103,7 @@ runs, so a burst of notifications always ends on the latest value.
   and the backend reports not attached.
 - If attaching or reading fails (no device, audio service not running yet at logon, audio service
   restarted), the app list is kept or cleared accordingly and a **retry timer** runs until a reconcile
-  succeeds, with a doubling delay (3 s, 6 s, ... 60 s). While everything works the timer is stopped, so there
+  succeeds, with a doubling delay (3 s, 6 s, 12 s, then every 15 s). While everything works the timer is stopped, so there
   is no polling. With no device at all the enumerator is kept, so its default-device event reports a new
   device immediately.
 - A service restart is noticed through the disconnect event of any watched session. The system sounds
@@ -123,7 +125,8 @@ one and only rebuilds when it differs; replaced items are disposed.
 ## Build & packaging
 
 - `src/AutoVolumeControl` – SDK-style project targeting `net48`.
-- Costura.Fody embeds all dependencies, so the output is a single `AutoVolumeControl.exe`.
+- Costura.Fody embeds the dependencies (MaterialSkin), so the output is a single `AutoVolumeControl.exe`;
+  `AutoVolumeControl.exe.config` is optional (it only names the runtime version).
 - `app.manifest` declares the supported Windows versions and system DPI awareness.
 - `tests/AutoVolumeControl.Tests` – xUnit tests (see README).
 
@@ -145,15 +148,15 @@ one and only rebuilds when it differs; replaced items are disposed.
 
 - Session notifications are registered on an MTA thread and `IAudioSessionEnumerator::GetCount` is called once
   afterwards; Windows discards session notifications before that.
-- Our notification handlers never block and never call the audio API; they only set flags and post work to
-  the audio thread. The session reference CSCore adds for `SessionCreated` is queued and released on the audio
-  thread. Note that CSCore itself registers an `IAudioSessionEvents` for the new session inside
-  `OnSessionCreated` before our handler runs; that is outside our control.
-- On detach the session manager is disposed (unregistering at the audio API) before the managed handler is
-  removed, because CSCore reads the handler twice while raising the event.
-- CSCore unregisters COM callbacks in finalizers. When a release fails (e.g. the audio service stopped), the
-  finalizer is suppressed, and `legacyUnhandledExceptionPolicy` in `App.config` keeps a failing finalizer of a
-  half-constructed CSCore object from ending the process (it is still logged).
+- Our notification handlers never block, never throw back into the audio service and never call the audio API;
+  they only set flags and post work to the audio thread. `OnSessionCreated` takes the new session as a raw
+  pointer and does not touch it, so there is no AddRef/Release inside the callback.
+- Our own volume writes pass `CoreAudioBackend.EventContext`; notifications carrying it are ignored.
+- Every COM object is a plain runtime-callable wrapper, released deterministically with `Marshal.ReleaseComObject`
+  (one release per reference obtained). Callbacks are unregistered explicitly; failures to unregister from a
+  stopped audio service are logged and ignored. No finalizer does COM work, so nothing can throw on the
+  finalizer thread. (An earlier version used the CSCore wrapper library, whose finalizers could end the process
+  after an audio service restart; it was replaced by `CoreAudioInterop`.)
 
 ## Known limitations
 

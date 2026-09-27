@@ -19,7 +19,10 @@ with the master volume of the default playback device.
 dotnet build AutoVolumeControl.sln -c Release
 ```
 
-The single-file executable is written to `src/AutoVolumeControl/bin/Release/net48/AutoVolumeControl.exe`.
+The single-file executable is written to `src/AutoVolumeControl/bin/Release/net48/AutoVolumeControl.exe`
+(dependencies are embedded; the `.exe.config` next to it is optional).
+
+Diagnostics are written to `%LOCALAPPDATA%\AutoVolumeControl\AutoVolumeControl.log`.
 
 ## Test
 
@@ -28,8 +31,9 @@ dotnet test AutoVolumeControl.sln
 ```
 
 Most tests use fakes. `CoreAudioBackendTests` run against the real Windows audio stack: they only
-change the volume of the test process's own (silent) audio session and are skipped when no playback
-device exists. Tests use temporary registry keys under `HKCU\SOFTWARE\AutoVolumeControl.Tests`
+change the volume of the test process's own (silent) audio session and of a silent helper process they
+compile and start, and are skipped when no playback device exists. Tests that measure process-wide state
+run in a non-parallel collection. Tests use temporary registry keys under `HKCU\SOFTWARE\AutoVolumeControl.Tests`
 which are removed afterwards.
 
 ## Layout

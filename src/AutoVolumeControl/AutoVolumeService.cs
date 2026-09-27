@@ -14,13 +14,15 @@ namespace AutoVolumeControl
     /// if needed, read the sessions, update the app list and correct volumes that differ. It is event driven:
     /// master volume changes, session changes (created, state, own volume, process exit), device changes and
     /// preference changes trigger it. A timer only runs while the device is not usable (e.g. at logon before the
-    /// audio service is ready, or after it restarted) and retries with a growing delay until it works again.
+    /// audio service is ready, or after it restarted) and retries with a growing delay until it works again, or
+    /// when a paused correction (see <see cref="CorrectionThrottle"/>) is due again.
     /// </para>
     /// </summary>
     sealed class AutoVolumeService : IDisposable
     {
         public static readonly TimeSpan DefaultRetryInterval = TimeSpan.FromSeconds(3);
-        public static readonly TimeSpan MaxRetryInterval = TimeSpan.FromSeconds(60);
+        /// <summary>Upper bound for the retry delay, so a device or service that comes back is picked up quickly.</summary>
+        public static readonly TimeSpan MaxRetryInterval = TimeSpan.FromSeconds(15);
 
         private readonly IAudioBackend backend;
         private readonly AppPreferences preferences;
@@ -37,6 +39,7 @@ namespace AutoVolumeControl
         // Only read and written on the audio thread.
         private bool disposed;
         private int consecutiveFailures;
+        private Exception lastError;
 
         public AutoVolumeService(IAudioBackend backend, AppPreferences preferences, Apps apps, TimeSpan? retryInterval = null, CorrectionThrottle throttle = null)
         {
@@ -74,8 +77,19 @@ namespace AutoVolumeControl
         /// <summary>True when the last reconcile succeeded.</summary>
         public bool IsHealthy => Volatile.Read(ref healthy) == 1;
 
-        /// <summary>Brings the app list and the volumes up to date.</summary>
-        public Task RefreshAsync() => audioThread.Post(() => { Reconcile(); });
+        /// <summary>The failure of the last reconcile, or null.</summary>
+        public Exception LastError => Volatile.Read(ref lastError);
+
+        /// <summary>
+        /// Re-reads the session list from Windows and brings the app list and volumes up to date. Used when the
+        /// menu opens, so anything a missed notification left behind is corrected at the latest then.
+        /// </summary>
+        public Task RefreshAsync() => audioThread.Post(() =>
+        {
+            if (backend.IsAttached)
+                backend.InvalidateSessions();
+            Reconcile();
+        });
 
         /// <summary>
         /// Schedules a reconcile. Requests arriving while one is still queued are merged into it, and the
@@ -114,7 +128,8 @@ namespace AutoVolumeControl
 
             var error = AttachIfNeeded() ?? SyncSessions();
             Volatile.Write(ref healthy, error == null ? 1 : 0);
-            ScheduleRetry(error != null);
+            Volatile.Write(ref lastError, error);
+            ScheduleTimer(error != null);
             return error;
         }
 
@@ -147,6 +162,7 @@ namespace AutoVolumeControl
                 {
                     UpdateApps(sessions);
                     VolumeSynchronizer.Sync(volume, muted, sessions, preferences, throttle);
+                    throttle.Retain(sessions.Select(s => s.Id ?? s.Name));
                 }
                 finally
                 {
@@ -164,18 +180,24 @@ namespace AutoVolumeControl
         }
 
         /// <summary>
-        /// The timer only runs while something failed; in normal operation everything is event driven.
-        /// The delay doubles with every failure (3 s, 6 s, 12 s, ... up to 60 s).
+        /// The timer only runs while something failed (the delay doubles with every failure: 3 s, 6 s, 12 s, then
+        /// every 15 s) or while an app's corrections are paused (then it fires when the pause ends).
+        /// In normal operation everything is event driven.
         /// </summary>
-        private void ScheduleRetry(bool failed)
+        private void ScheduleTimer(bool failed)
         {
             consecutiveFailures = failed ? consecutiveFailures + 1 : 0;
             if (Volatile.Read(ref disposeCalled) != 0)
                 return;
 
+            var due = failed ? RetryDelay(consecutiveFailures) : Timeout.InfiniteTimeSpan;
+            var resume = throttle.TimeUntilNextResume();
+            if (resume.HasValue && (due == Timeout.InfiniteTimeSpan || resume.Value < due))
+                due = resume.Value;
+
             try
             {
-                retryTimer.Change(failed ? RetryDelay(consecutiveFailures) : Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+                retryTimer.Change(due, Timeout.InfiniteTimeSpan);
             }
             catch (ObjectDisposedException)
             {
@@ -246,7 +268,7 @@ namespace AutoVolumeControl
             });
             try
             {
-                shutdown.Wait(TimeSpan.FromSeconds(5));
+                shutdown.Wait(TimeSpan.FromSeconds(3));
             }
             catch (AggregateException ex)
             {
