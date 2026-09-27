@@ -35,7 +35,8 @@ flowchart LR
 
 | Class | Responsibility |
 |---|---|
-| `Program` | Entry point; enables visual styles and runs `VolumeControl`. |
+| `Program` | Entry point; ensures a single instance, logs unhandled exceptions and runs `VolumeControl`. |
+| `SingleInstance` | Named mutex so two instances never sync against each other. |
 | `VolumeControl` | `ApplicationContext`: owns the tray icon, context menu, settings and the service. Marshals `Apps.AppsUpdated` to the UI thread. |
 | `MenuHandler` | Builds the tray menu (one checkbox per app, "Start with Windows", Exit). Rebuilds only when the content changed and disposes the old items. |
 | `AutoVolumeService` | Orchestrates everything audio related on the `AudioThread`: attach to the device, list apps, sync volumes, react to events. |
@@ -97,8 +98,26 @@ rebuilds when it differs.
 
 - `src/AutoVolumeControl` – SDK-style project targeting `net48`.
 - Costura.Fody embeds all dependencies, so the output is a single `AutoVolumeControl.exe`.
-- `app.manifest` declares the supported Windows versions and system DPI awareness (sharp rendering at the primary monitor's scaling).
+- `app.manifest` declares the supported Windows versions and system DPI awareness.
 - `tests/AutoVolumeControl.Tests` – xUnit tests (see README).
+
+## DPI and sharpness
+
+- The process is **system DPI aware** (`app.manifest`): WinForms and MaterialSkin render the menu natively at
+  the system scaling (e.g. 144 DPI at 150 %) instead of being bitmap-stretched by Windows.
+- The tray icon is loaded in `SystemInformation.SmallIconSize` (24x24 at 150 %) from the multi-size `icon.ico`,
+  so Windows does not downscale a larger image.
+- Limitation: on a monitor whose scaling differs from the primary monitor, Windows scales the menu of a system
+  aware app. Per-monitor awareness would need the MaterialSkin menu to rescale itself on DPI changes, which it
+  does not support.
+
+## Core Audio API rules followed
+
+- Session notifications are registered on an MTA thread and `IAudioSessionEnumerator::GetCount` is called once
+  afterwards; Windows discards session notifications before that.
+- Notification callbacks (`OnNotify`, `OnSessionCreated`, `OnDefaultDeviceChanged`) never block, never call
+  back into the audio API and never release the last reference of an audio object; they only post work to the
+  audio thread. The session reference CSCore adds for `SessionCreated` is released right away.
 
 ## Notes
 

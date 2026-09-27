@@ -114,6 +114,13 @@ namespace AutoVolumeControl.Tests
             using var silence = PlaySilence();
             try
             {
+                // Wait for the notification before enumerating: Attach() alone must enable it,
+                // because Windows only sends it after GetCount was called on an enumerator.
+                var created = Stopwatch.StartNew();
+                while (Volatile.Read(ref sessionsCreated) == 0 && created.Elapsed < TimeSpan.FromSeconds(3))
+                    Thread.Sleep(50);
+                Assert.True(sessionsCreated > 0, "SessionCreated was not raised for the new session.");
+
                 IAudioSession own = null;
                 var watch = Stopwatch.StartNew();
                 while (own == null && watch.Elapsed < Timeout)

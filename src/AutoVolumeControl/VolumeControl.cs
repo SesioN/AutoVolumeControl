@@ -56,10 +56,14 @@ namespace AutoVolumeControl
 
         internal ContextMenuStrip ContextMenu => contextMenuStrip;
 
-        private static Icon LoadIcon()
+        /// <summary>
+        /// Picks the image matching the tray size (e.g. 24x24 at 150 %). Without a size, the 48x48 image
+        /// would be loaded and downscaled by Windows, which looks blurry.
+        /// </summary>
+        internal static Icon LoadIcon()
         {
             using var stream = typeof(VolumeControl).Assembly.GetManifestResourceStream("AutoVolumeControl.icon.ico");
-            return new Icon(stream);
+            return new Icon(stream, SystemInformation.SmallIconSize);
         }
 
         private void ShowError(string message)

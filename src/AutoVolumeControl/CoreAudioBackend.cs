@@ -41,8 +41,9 @@ namespace AutoVolumeControl
 
             sessionManager = AudioSessionManager2.FromMMDevice(device);
             sessionManager.SessionCreated += OnSessionCreated;
-            // Windows only delivers session notifications after the sessions were enumerated once.
-            using (sessionManager.GetSessionEnumerator()) { }
+            // Windows discards session notifications until IAudioSessionEnumerator::GetCount was called once.
+            using (var sessions = sessionManager.GetSessionEnumerator())
+                _ = sessions.Count;
         }
 
         public (float Volume, bool Muted) GetMasterVolume()
@@ -89,6 +90,8 @@ namespace AutoVolumeControl
 
         private void OnSessionCreated(object sender, SessionCreatedEventArgs e)
         {
+            // CSCore adds a reference for the handler; the session is re-read on the audio thread.
+            e.NewSession?.Dispose();
             SessionCreated?.Invoke(this, EventArgs.Empty);
         }
 

@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace AutoVolumeControl
@@ -8,6 +10,15 @@ namespace AutoVolumeControl
         [STAThread]
         static void Main()
         {
+            using var instance = SingleInstance.Acquire();
+            if (!instance.IsFirstInstance)
+                return;
+
+            // A tray app has no window to show the default error dialog in a useful way; log and keep running.
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += (sender, e) => Trace.WriteLine($"Unhandled UI exception: {e.Exception}");
+            AppDomain.CurrentDomain.UnhandledException += (sender, e) => Trace.WriteLine($"Unhandled exception: {e.ExceptionObject}");
+
             // DPI awareness is declared in app.manifest.
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
