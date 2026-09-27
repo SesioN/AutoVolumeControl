@@ -52,6 +52,8 @@ players) tied to the master volume, or to let one app always play at a fixed sha
   display scaling.
 - **Single portable executable.** No installer and no admin rights needed.
 
+See the [changelog](CHANGELOG.md) for the version history.
+
 ## Installation
 
 Requirements: Windows 10 or 11 with [.NET Framework 4.8](https://dotnet.microsoft.com/download/dotnet-framework/net48)
@@ -139,12 +141,13 @@ Windows runner, and keeps the executable as a build artifact.
 To publish a release:
 
 1. Bump `AssemblyVersion` and `AssemblyFileVersion` in
-   [`src/AutoVolumeControl/Properties/AssemblyInfo.cs`](src/AutoVolumeControl/Properties/AssemblyInfo.cs) and commit
-   it to `master`.
-2. Either push a tag of the form `vMAJOR.MINOR.PATCH` (e.g. `git tag v1.7.0 && git push origin v1.7.0`), or start the
+   [`src/AutoVolumeControl/Properties/AssemblyInfo.cs`](src/AutoVolumeControl/Properties/AssemblyInfo.cs), add a
+   section for the version to [`CHANGELOG.md`](CHANGELOG.md) and commit both to `master`.
+2. Either push a tag of the form `vMAJOR.MINOR.PATCH` (e.g. `git tag v1.8.0 && git push origin v1.8.0`), or start the
    **Build** workflow manually under **Actions** and enter the tag in **release_tag**.
-3. The workflow builds and tests that commit and creates a GitHub release with `AutoVolumeControl.exe` and generated
-   release notes.
+3. The workflow builds and tests that commit and creates a GitHub release with `AutoVolumeControl.exe`. Its
+   description is the version's section of `CHANGELOG.md` (or `.github/release-notes/<tag>.md`, if present) followed
+   by the SHA-256 checksum of the executable. Running it again for an existing tag updates the release.
 
 Versions follow [Semantic Versioning](https://semver.org/).
 
@@ -155,6 +158,8 @@ src/AutoVolumeControl/          the application
 tests/AutoVolumeControl.Tests/  xUnit tests
 docs/ARCHITECTURE.md            architecture, components and threading model
 .github/workflows/build.yml     CI build, tests and releases
+.github/release-notes/          hand-written release descriptions (optional)
+CHANGELOG.md                    version history
 ```
 
 New to the code? Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

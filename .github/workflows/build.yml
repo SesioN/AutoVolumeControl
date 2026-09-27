@@ -46,22 +46,43 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: AutoVolumeControl
 
-      - name: Checksum
+      # Notes: .github/release-notes/<tag>.md if it exists, else the tag's section of CHANGELOG.md; then the checksum.
+      - name: Release notes
         run: |
-          echo "SHA-256 of \`AutoVolumeControl.exe\`:" > notes.md
-          echo '```' >> notes.md
-          sha256sum AutoVolumeControl.exe | cut -d' ' -f1 >> notes.md
-          echo '```' >> notes.md
+          notes=".github/release-notes/$TAG.md"
+          if [ -f "$notes" ]; then
+            cat "$notes" > release-notes.md
+          else
+            awk -v v="${TAG#v}" '
+              index($0, "## [" v "]") == 1 { found = 1; next }
+              found && /^## \[/ { exit }
+              found { print }
+            ' CHANGELOG.md > release-notes.md
+          fi
+          {
+            echo
+            echo "## Checksum"
+            echo
+            echo "SHA-256 of \`AutoVolumeControl.exe\`:"
+            echo '```'
+            sha256sum AutoVolumeControl.exe | cut -d' ' -f1
+            echo '```'
+          } >> release-notes.md
+          cat release-notes.md
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          tag_name: ${{ env.TAG }}
           target_commitish: ${{ github.sha }}
+          name: AutoVolumeControl ${{ env.TAG }}
           files: AutoVolumeControl.exe
-          body_path: notes.md
-          generate_release_notes: true
+          body_path: release-notes.md
