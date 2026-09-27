@@ -273,7 +273,7 @@ namespace AutoVolumeControl.Tests
                 menu.ExitRequested += (s, e) => exits++;
                 menu.Generate();
 
-                FindExitButton(strip).PerformClick();
+                Clicks.Raise(FindExitButton(strip));
 
                 Assert.Equal(1, exits);
             });
@@ -408,19 +408,14 @@ namespace AutoVolumeControl.Tests
                 apps.Update(new[] { "chrome" });
                 CreateMenu(strip).Generate();
 
-                InvokeOnClick(FindControl<Label>(strip, MenuHandler.LabelName("chrome")));
+                Clicks.Raise(FindControl<Label>(strip, MenuHandler.LabelName("chrome")));
                 Assert.False(FindCheckbox(strip, "chrome").Checked);
                 Assert.Equal("False", store.Values["chrome"]);
 
-                InvokeOnClick(FindControl<PictureBox>(strip, MenuHandler.IconName("chrome")));
+                Clicks.Raise(FindControl<PictureBox>(strip, MenuHandler.IconName("chrome")));
                 Assert.True(FindCheckbox(strip, "chrome").Checked);
                 Assert.Equal("True", store.Values["chrome"]);
             });
-        }
-
-        private static void InvokeOnClick(Control control)
-        {
-            typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(control, new object[] { EventArgs.Empty });
         }
 
         // ---- ratio slider ----

@@ -123,7 +123,7 @@ namespace AutoVolumeControl.Tests
                 app.Started.Wait(TimeSpan.FromSeconds(10));
                 var exit = app.ContextMenu.Items.OfType<ToolStripControlHost>().SelectMany(h => h.Control.Controls.OfType<Button>()).Single();
 
-                exit.PerformClick();
+                Clicks.Raise(exit);
                 Assert.False(backend.Disposed);
 
                 Assert.True(Sta.PumpUntil(() => backend.Disposed));

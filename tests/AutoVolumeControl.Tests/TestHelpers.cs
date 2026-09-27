@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Windows.Forms;
@@ -276,6 +277,18 @@ namespace AutoVolumeControl.Tests
                 Thread.Sleep(5);
             }
             return true;
+        }
+    }
+
+    static class Clicks
+    {
+        /// <summary>
+        /// Raises the control's Click event. Unlike <see cref="Button.PerformClick"/> it does not require the control to
+        /// be selectable, which a control in a menu that is not shown on an interactive desktop (e.g. on CI) is not.
+        /// </summary>
+        public static void Raise(Control control)
+        {
+            typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(control, new object[] { EventArgs.Empty });
         }
     }
 }
