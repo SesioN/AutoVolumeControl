@@ -39,7 +39,7 @@ namespace AutoVolumeControl
             {
                 try
                 {
-                    if (session.IsSystemSound || string.IsNullOrEmpty(session.Name))
+                    if (string.IsNullOrEmpty(session.Name))
                         continue;
 
                     if (!preferences.IsEnabled(session.Name))

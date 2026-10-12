@@ -11,6 +11,9 @@ namespace AutoVolumeControl
     /// </summary>
     internal static class SessionNameResolver
     {
+        /// <summary>Name of the Windows system sounds session (notifications, alerts) in the menu and settings.</summary>
+        public const string SystemSoundsName = "System Sounds";
+
         public static string Resolve(string processName, string displayName, string sessionIdentifier)
         {
             if (!string.IsNullOrWhiteSpace(processName))

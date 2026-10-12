@@ -49,13 +49,15 @@ namespace AutoVolumeControl.Tests
         public void Start_AttachesListsAppsAndSyncs()
         {
             var chrome = new FakeSession("chrome");
-            backend.SetSessions(chrome, new FakeSession("System", isSystemSound: true));
+            var system = new FakeSession(SessionNameResolver.SystemSoundsName, isSystemSound: true);
+            backend.SetSessions(chrome, system);
             backend.SetMaster(0.3f, false);
 
             StartAttached();
 
             Assert.Equal(1, backend.AttachCount);
-            Assert.Equal(new[] { "chrome" }, apps.GetAppNames());
+            Assert.Equal(new[] { "chrome", SessionNameResolver.SystemSoundsName }, apps.GetAppNames());
+            Assert.Equal(0.3f, system.Volume);
             Assert.Equal("True", store.Values["chrome"]);
             Assert.Equal(0.3f, chrome.Volume);
         }

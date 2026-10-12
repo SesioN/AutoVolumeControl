@@ -238,7 +238,7 @@ namespace AutoVolumeControl
         {
             // One entry per name, with the first executable found among its sessions.
             var current = sessions
-                .Where(s => !s.IsSystemSound && !string.IsNullOrEmpty(s.Name))
+                .Where(s => !string.IsNullOrEmpty(s.Name))
                 .GroupBy(s => s.Name)
                 .Select(g => new AppInfo(
                     g.Key,

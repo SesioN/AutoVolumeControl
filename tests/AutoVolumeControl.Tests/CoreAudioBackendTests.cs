@@ -107,7 +107,7 @@ namespace AutoVolumeControl.Tests
         }
 
         [SkippableFact]
-        public void SystemSoundsSession_IsWatched_ButNotListedAsApp()
+        public void SystemSoundsSession_IsWatchedUnderAFixedName()
         {
             // Its disconnect notification reveals an audio service restart even when no app plays audio.
             SkipWithoutPlaybackDevice();
@@ -124,6 +124,7 @@ namespace AutoVolumeControl.Tests
 
                 int watched = audioThread.Post(() => backend.WatchedSessionCount).Result;
                 Assert.Equal(sessions.Count, watched);
+                Assert.All(sessions.Where(s => s.IsSystemSound), s => Assert.Equal(SessionNameResolver.SystemSoundsName, s.Name));
             }
             finally
             {

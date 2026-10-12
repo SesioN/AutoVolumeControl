@@ -171,8 +171,11 @@ namespace AutoVolumeControl
                             continue;
 
                         control.GetDisplayName(out var displayName);
-                        var name = SessionNameResolver.Resolve(process.Name, displayName, sessionIdentifier);
                         bool isSystemSound = control.IsSystemSoundsSession() == 0;
+                        // Its display name is a localized resource reference; a fixed name keeps the settings key stable.
+                        var name = isSystemSound
+                            ? SessionNameResolver.SystemSoundsName
+                            : SessionNameResolver.Resolve(process.Name, displayName, sessionIdentifier);
                         var executablePath = isSystemSound ? null : FindExecutable(control, processId, sessionIdentifier);
 
                         var watch = new SessionWatch(this, control, id, name, executablePath, isSystemSound, processId, sessionIdentifier);
@@ -531,7 +534,7 @@ namespace AutoVolumeControl
                 // Our own writes are tagged; only changes made by the app itself need a correction.
                 public int OnSimpleVolumeChanged(float newVolume, bool newMute, IntPtr eventContext) => Notify(() =>
                 {
-                    if (!watch.IsSystemSound && CoreAudio.ReadGuid(eventContext) != EventContext)
+                    if (CoreAudio.ReadGuid(eventContext) != EventContext)
                         watch.owner.RaiseSessionsChanged(markDirty: false);
                 });
 

@@ -37,9 +37,21 @@ namespace AutoVolumeControl.Tests
         }
 
         [Fact]
-        public void SkipsSystemSounds()
+        public void SyncsSystemSoundsLikeAnyApp()
         {
-            var system = new FakeSession("System", isSystemSound: true);
+            var system = new FakeSession(SessionNameResolver.SystemSoundsName, volume: 1f, isSystemSound: true);
+
+            VolumeSynchronizer.Sync(0.4f, true, new[] { system }, preferences);
+
+            Assert.Equal(0.4f, system.Volume);
+            Assert.True(system.Muted);
+        }
+
+        [Fact]
+        public void SkipsSystemSoundsWhenDisabled()
+        {
+            store.Values[SessionNameResolver.SystemSoundsName] = "False";
+            var system = new FakeSession(SessionNameResolver.SystemSoundsName, isSystemSound: true);
 
             VolumeSynchronizer.Sync(0.4f, false, new[] { system }, preferences);
 
