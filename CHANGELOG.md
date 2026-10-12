@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/). Versions up to 1.4 were published outside GitHub; 1.7.0 is the first
 release on [GitHub Releases](https://github.com/SesioN/AutoVolumeControl/releases).
 
-## [Unreleased]
+## [1.8.0] - 2026-10-12
 
 ### Added
 - **System Sounds** entry in the app list: Windows notifications and alert sounds now follow the master volume (and
@@ -119,4 +119,5 @@ release on [GitHub Releases](https://github.com/SesioN/AutoVolumeControl/release
 - Initial version: keeps the volume of all running apps in sync with the master volume of the default playback
   device.
 
+[1.8.0]: https://github.com/SesioN/AutoVolumeControl/releases/tag/v1.8.0
 [1.7.0]: https://github.com/SesioN/AutoVolumeControl/releases/tag/v1.7.0
